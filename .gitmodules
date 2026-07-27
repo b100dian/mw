@@ -6,3 +6,7 @@
 	path = droidmedia
 	url = git@github.com:b100dian/droidmedia.git
 	branch = hwenc
+[submodule "qt5-qpa-hwcomposer-plugin"]
+	path = qt5-qpa-hwcomposer-plugin
+	url = git@github.com:b100dian/qt5-qpa-hwcomposer-plugin.git
+	branch = hwenc
