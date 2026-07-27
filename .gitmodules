@@ -1,0 +1,4 @@
+[submodule "gst-droid"]
+	path = gst-droid
+	url = git@github.com:b100dian/gst-droid.git
+	branch = hwenc
