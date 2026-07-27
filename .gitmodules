@@ -2,3 +2,7 @@
 	path = gst-droid
 	url = git@github.com:b100dian/gst-droid.git
 	branch = hwenc
+[submodule "droidmedia"]
+	path = droidmedia
+	url = git@github.com:b100dian/droidmedia.git
+	branch = hwenc
