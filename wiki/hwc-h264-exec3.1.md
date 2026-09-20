@@ -2,8 +2,8 @@
 
 **Date:** 2026-09-20  
 **Basis:** `wiki/hwc-h264-encoding-revision3.1.md`  
-**Current gate:** Gate 2.3 — passed  
-**Status:** Gates 2.2 and 2.3 passed on-device. Execution is paused at a clean boundary before Gate 3.
+**Current gate:** Gate 3 — passed  
+**Status:** Gates 2.2, 2.3, and 3 passed on-device. Real QPA/HWC content is hardware-encoded correctly with the device-required vertical flip. Execution is ready to proceed to Gate 4.
 
 ## 1. Starting point
 
@@ -451,3 +451,169 @@ Do not move the source buffer to a background thread: the present design has no 
 If Gate 3 changes only QPA, the next device request should require only a rebuilt/deployed `qt5-qpa-hwcomposer-plugin`; rebuild the Android droidmedia artifacts only if the private ABI changes. Device validation should use a recognizable moving UI pattern at `1080x2520`, run two recorder sessions without restarting lipstick, inspect decoded orientation/content/motion, and retain recorder output plus the complete lipstick journal and swap-latency evidence.
 
 Gate 3 passes only with correct real screen content and orientation, no capture-only EGL/GL errors, clean generation detach/reacquire, and no persistent UI hitch. **Gate 4** is then the `droidscreencapsrc` refactor to consume `ScreenCaptureSurfaceEncoder`, with bounded output buffering and restart-safe cleanup.
+
+## 17. Gate 3 implementation — ready for build
+
+Gate 3 is implemented in `qt5-qpa-hwcomposer-plugin/hwcomposer/hwcomposer_backend_v20.cpp`. The private recorder ABI is unchanged, so the Gate 2.3-proven droidmedia artifacts remain valid.
+
+### 17.1 Explicit capture modes
+
+Capture still requires `QPA_HWC_SCREENCAP=1`, and now requires exactly one explicit producer mode:
+
+```text
+QPA_HWC_SCREENCAP_TEST_BARS=1   # retained Gate 2 diagnostic
+QPA_HWC_SCREENCAP_SOURCE=1      # Gate 3 real HWC source
+```
+
+Setting both or neither disables capture. The startup log identifies the selected mode. `QPA_HWC_SCREENCAP_FLIP_Y=1` is an explicit diagnostic orientation switch; the first source run must leave it unset so device output determines whether a vertical flip is required.
+
+### 17.2 Native-buffer import correction
+
+The disabled helper previously passed `buffer_handle_t` as the `EGLClientBuffer` for `EGL_NATIVE_BUFFER_ANDROID`. Gate 3 now follows libhybris's native-window contract:
+
+- `src->handle` remains the EGLImage/texture cache key;
+- `src->getNativeBuffer()` supplies the required `ANativeWindowBuffer *` to `eglCreateImageKHR()`.
+
+Each HWC source slot is imported once per recorder generation/capture context and cached with its GLES texture. Cache teardown destroys GL objects with the capture context current and destroys display-level EGLImages even if making that context current during cleanup fails.
+
+### 17.3 Source synchronization
+
+Primary `eglSwapBuffers()` returning does not by itself prove that GPU rendering into the source buffer has completed. While still inside `present()`, the source mode therefore performs only one additional bounded/non-blocking ownership operation: it duplicates the source acquire fence before HWC takes the original. No wait, EGL call, Binder call, or capture rendering occurs there.
+
+The immediate post-primary-swap path owns the duplicate through all early returns. Only when a source frame is actually due does it call `sync_wait()` with a 250 ms timeout before importing/sampling the buffer. The duplicate is then closed automatically. A duplication failure or bounded wait failure latches the current recorder generation through the existing circuit breaker.
+
+### 17.4 Checked import and blit
+
+The dedicated capture context now:
+
+1. verifies `EGL_KHR_image`/`EGL_KHR_image_base`, `EGL_ANDROID_image_native_buffer`, and `GL_OES_EGL_image`;
+2. verifies the dynamically resolved create/destroy/image-target entry points;
+3. reports the immediate EGL error from native-buffer image creation;
+4. binds the image to a `GL_TEXTURE_2D` and reports immediate GL errors;
+5. compiles and link-checks the GLES2 blit shaders with info logs;
+6. draws a full-surface textured quad, optionally flipping Y through a shader uniform;
+7. checks draw and flush errors before timestamping and swapping the encoder surface.
+
+Source-extension, source-import, source-texture, shader/link, draw/flush, timestamp, encoder-swap, and QPA-restore failures are logged separately. All failures retain generation latching and restore the primary QPA context before teardown whenever possible.
+
+The proven Gate 2.3 session query, absolute pacing, presentation timestamps, encoder-swap latency warning/circuit breaker, detach grace, and sequential-generation behavior are unchanged.
+
+### 17.5 Static review
+
+- `git diff --check` passes in `qt5-qpa-hwcomposer-plugin`.
+- An independent focused review found no Gate 3 blocker in fence ownership, context restoration, native-buffer typing, cache lifetime, shader handling, or target C++ compatibility.
+- That review identified a possible EGLImage leak if teardown could not make the capture context current; cleanup was corrected so EGLImage destruction does not depend on a current GL context.
+- Host editor diagnostics remain unusable because the Sailfish/Android target headers and Qt target configuration are absent.
+- The target `qt5-qpa-hwcomposer-plugin` package build completed successfully on 2026-09-20 with no reported compiler error.
+
+### 17.6 Build and deployment
+
+The QPA-only package build passed:
+
+```text
+Building of qt5-qpa-hwcomposer-plugin finished successfully
+```
+
+Deploy the resulting `libhwcomposer.so`. Do not rebuild or replace `libdroidmedia.so`, `libminisf.so`, the recorder test, or libhybris for this attempt if the Gate 2.3-proven artifacts remain installed.
+
+### 17.7 First Gate 3 device procedure
+
+Before restarting lipstick, configure:
+
+```sh
+QPA_HWC_SCREENCAP=1
+QPA_HWC_SCREENCAP_SOURCE=1
+QPA_HWC_SCREENCAP_DEBUG=1
+QPA_HWC_SCREENCAP_FRAME_LIMIT=0
+QPA_HWC_SCREENCAP_FRAME_SKIP=1
+```
+
+Ensure `QPA_HWC_SCREENCAP_TEST_BARS`, `QPA_HWC_SCREENCAP_FLIP_Y`, and `QPA_HWC_SCREENCAP_FPS` are unset. Confirm startup contains:
+
+```text
+screencap: post-swap HWC source enabled: fps=recorder session, limit=0
+```
+
+Use a visually asymmetric screen (different content at the top and bottom), then scroll or animate it throughout two recorder sessions without restarting lipstick:
+
+```sh
+rm -f /tmp/screencap-gate3-s1.h264 /tmp/screencap-gate3-s2.h264
+
+SCREENCAP_SURFACE_DEBUG=1 \
+LD_LIBRARY_PATH=/usr/libexec/droid-hybris/system/lib64 \
+/home/defaultuser/screencap_surface_capture_test \
+    1080 2520 8000000 30 5 /tmp/screencap-gate3-s1.h264
+
+SCREENCAP_SURFACE_DEBUG=1 \
+LD_LIBRARY_PATH=/usr/libexec/droid-hybris/system/lib64 \
+/home/defaultuser/screencap_surface_capture_test \
+    1080 2520 8000000 30 5 /tmp/screencap-gate3-s2.h264
+```
+
+Validate both streams:
+
+```sh
+ffprobe -v error -count_frames -select_streams v:0 \
+    -show_entries stream=codec_name,profile,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_read_frames \
+    -of default=noprint_wrappers=1 /tmp/screencap-gate3-s1.h264
+
+ffprobe -v error -count_frames -select_streams v:0 \
+    -show_entries stream=codec_name,profile,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_read_frames \
+    -of default=noprint_wrappers=1 /tmp/screencap-gate3-s2.h264
+
+ffmpeg -v error -i /tmp/screencap-gate3-s1.h264 \
+    -vf "select=eq(n\\,0)+eq(n\\,30)+eq(n\\,60)" -vsync 0 \
+    /tmp/screencap-gate3-s1-%02d.png
+```
+
+Retain both recorder logs, both H.264 files, representative decoded frames, and the complete lipstick journal. Report whether content is correct, vertically inverted, otherwise transformed/cropped, stale, black, or corrupted, plus UI responsiveness. If the only defect is vertical inversion, restart lipstick with `QPA_HWC_SCREENCAP_FLIP_Y=1` and repeat; do not change the shader based on assumption alone.
+
+## 18. First Gate 3 device result — source path passed, orientation retry required
+
+The first real-content run successfully imported and encoded the HWC source in two sessions without restarting lipstick:
+
+```text
+session 1: generation=1, frames=40, bytes=1726105
+session 2: generation=3, frames=113, bytes=5113385
+```
+
+Both streams were High-profile H.264 at `1080x2520`, 30 fps nominal. The videos showed recognizable changing screen content. The content was vertically inverted, with no other reported corruption; this confirms that the device's native-buffer texture origin requires the implemented `QPA_HWC_SCREENCAP_FLIP_Y=1` path.
+
+Journal review found:
+
+- all three HWC source slots imported successfully in each capture context;
+- 153 submitted real-source frames across the two sessions;
+- source acquire-fence waits: `0.006–4.640 ms`, average `0.064 ms`;
+- encoder swaps: `0.624–3.205 ms`, average `1.271 ms`;
+- two clean generation detaches;
+- no source import, shader, GL/EGL, restore, latency, circuit-breaker, or restart failure.
+
+Gate 3's real source-import/blit, synchronization, hardware encoding, and sequential-session lifecycle therefore pass. Correct orientation remains to be confirmed with the existing flip switch before declaring the full gate passed.
+
+### 18.1 Idle session-query cost
+
+The `active=0` message is emitted only with `QPA_HWC_SCREENCAP_DEBUG=1`. The underlying query is not performed on every display frame: it is capped by the existing 250 ms session-check deadline and can run only following a primary swap. In this journal, 52 inactive queries took `0.183–1.963 ms`, averaging `0.827 ms`.
+
+This is low average load (at most four short Binder queries per second while the display is continuously swapping), but it is synchronous work on the UI thread and therefore is not literally free. No corresponding UI hitch was reported. Debug journal formatting adds separate overhead and is disabled in normal operation. A longer idle backoff or event-driven registration notification may be considered for product polish, but changing discovery semantics is not required to validate Gate 3.
+
+### 18.2 Apparent speed-up and idle-frame semantics
+
+The recorder log proves that MediaCodec preserves the QPA monotonic presentation timestamps, including idle gaps. For example, session 1 contains gaps of approximately 0.51, 0.53, and 0.67 seconds between output access units. The standalone diagnostic writes only raw Annex-B H.264 bytes, which have no container sample timestamps. Playback therefore reconstructs a constant nominal 30 fps timeline and compresses those gaps, making the video appear sped up.
+
+The product path should not force lipstick to render and re-encode a duplicate frame 30 times per second merely to represent inactivity. Gate 4 should carry each MediaCodec output PTS into the corresponding GStreamer buffer/container sample. A normal timestamp-aware player then holds the previous decoded frame until the next sample PTS, naturally representing a UI stall without redundant GPU/encoder work. The final sample also needs a duration extending to recorder stop/EOS. Constant-frame-rate duplication can remain an optional downstream conversion policy, not a requirement of the QPA capture path.
+
+## 19. Gate 3 orientation retry and final decision — passed
+
+The QPA source mode was restarted with:
+
+```text
+QPA_HWC_SCREENCAP_FLIP_Y=1
+```
+
+The resulting recording had the correct orientation. This confirms that the device's HWC native-buffer texture origin requires a vertical flip and that the implemented shader switch performs the required transform. The source content, motion, dimensions, hardware encoding, bounded source synchronization, encoder-surface swaps, and sequential generation lifecycle had already passed in the two-session run recorded in Section 18.
+
+The second raw `.h264` artifact was not consistently recognized by the Gallery application after playback. This does not invalidate Gate 3: both artifacts were produced as temporary raw Annex-B diagnostics rather than a supported media container, and raw H.264 carries neither the MediaCodec sample PTS timeline nor a reliable duration/index for Gallery. The same limitation explains accelerated playback across idle presentation gaps. Containerization, timestamp propagation, final-sample duration, and application-facing media compatibility belong to Gate 4.
+
+**Gate decision:** Gate 3 passes. The completed QPA/HWC display buffer is imported as an EGLImage, synchronously blitted with the correct vertical orientation into the remote MediaCodec input Surface, and hardware-encoded as real changing screen content without capture errors or persistent UI disruption.
+
+The next gate is **Gate 4 — refactor `droidscreencapsrc` to use `ScreenCaptureSurfaceEncoder` and preserve MediaCodec PTS/duration through GStreamer/container output**.
