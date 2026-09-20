@@ -1,7 +1,7 @@
 # HWC → H.264 Encoding — Revision 3.1: Remove Re-entrant EGL Capture and Prove the Hybris Surface Path
 
-**Date:** 2026-08-09; updated 2026-08-10  
-**Status:** Gates 0, 1, 2.1a, and 2.1b are passed. The remote Codec2 producer and the libhybris `null` and `hwcomposer` EGL paths are proven at 1080x2520. Gate 2.2 (post-primary-swap QPA test bars) is ready to build/test.  
+**Date:** 2026-08-09; updated 2026-09-20  
+**Status:** Gates 0 through 2.3 are passed. The remote Codec2 producer, libhybris EGL path, post-primary-swap QPA scheduling, paced encoding, and sequential recorder sessions are proven at 1080x2520. Execution is paused before Gate 3 (real QPA/HWC source content).  
 **Supersedes:** the **Gate 2 implementation approach** in `wiki/hwc-h264-encoding-revision3.md`. It retains Revision 3's Surface-input architecture, opaque QPA/libminisf ABI, and rejection of the raw metadata/`attachBuffer()` paths.
 
 ## 1. Decision
