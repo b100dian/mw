@@ -18,6 +18,12 @@ zypper --plus-repo $ANDROID_ROOT/droid-local-repo/$DEVICE in libhybris-devel lib
 
 Yes, replace the packages.
 
+Sometimes, droidmedia headers change, and droid-media devel also needs to be built and depolyed in the sb2 target (e.g before gst-droid build)
+
+```
+rpm/dhd/helpers/build_packages.sh -b hybris/mw/droidmedia -s rpm/droidmedia-devel.spec
+```
+
 # In HADK
 
 make droidmedia

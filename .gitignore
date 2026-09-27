@@ -1,2 +1,4 @@
 *.log
-droidmedia-localbuild/
+logs/
+droidmedia-localbuild
+
