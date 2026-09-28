@@ -344,11 +344,31 @@ Environment=QPA_HWC_SCREENCAP_FLIP_Y=1
 
 **To validate:** rebuild and deploy `qt5-qpa-hwcomposer-plugin`, rerun the Gate 4.1 command, and confirm lipstick logs `screencap: post-swap HWC source enabled` and picks up the recorder session.
 
+## 16a. Landscape capture (QPA rotation) — passed on device (2026-09-29)
+
+The display buffer is always portrait; lipstick rotates its UI inside it, so a landscape recording is sideways content in a portrait frame unless the capture blit rotates it. Rather than touch the Binder interface, the recorder asks for the display size with width/height swapped, and the QPA plugin (`hwcomposer/hwcomposer_backend_v20.cpp`) treats that as a request to rotate:
+
+- The session size is compared against the native display size (`m_captureWidth x m_captureHeight`, from the HWC2 active config). An exact match is rotation 0 (unchanged). A transposed match (and the native size isn't square) is accepted with rotation set from `QPA_HWC_SCREENCAP_LANDSCAPE_ROTATION` (`270` default, or `90`). Anything else is rejected as before; the reject log names both accepted sizes.
+- Rotation is applied in the existing GPU blit (`blitRgbaToSurface`): a `uRotation` shader uniform swaps texture coordinates before the existing vertical-flip mix, so it costs nothing extra (still 4 vertices, one draw call). Test-bars mode is unaffected — the synthetic pattern is drawn straight at the session size, no rotation needed.
+- The frame viewport and `captureFrame()` size use the session's own size (`m_captureOutputWidth/Height`), not the native display size, so the encoder Surface gets the correctly-oriented dimensions.
+- Rotation is decided per recorder generation, so a new session can switch portrait ↔ landscape in the same lipstick run; the existing generation-change teardown/recreate path handles it.
+
+**Default is `270`**, not `90`. Determined on device: 270 matches the camera-button-up landscape orientation on this phone (Xperia 5 IV). Override in the lipstick drop-in if a device needs the other direction:
+```ini
+Environment=QPA_HWC_SCREENCAP_LANDSCAPE_ROTATION=90
+```
+
+**Landscape test:** `droidscreencapsrc width=2520 height=1080 target-bitrate=8000000 fps=30 ! tcpserversink …` (swapped from the portrait Gate 4.1 command). Lipstick logs `rotation=270` in the "recorder session generation=…" line.
+
+**Device result:** picture upright, not stretched, no distortion. 2520-pixel-wide encoder configuration works (same pixel count as portrait 1080x2520, as anticipated). Portrait Gate 4.1 regression not separately re-verified this session — recommend a quick rerun (`rotation=0` expected in the log) next time the plugin is redeployed.
+
 ## 17. Open items before Gate 4 can close
 
 - Streaming variant B (RTP, proves timing on a host player).
 - Element tail-duration proof: `droidscreencapsrc … ! identity silent=false ! fakesink`, confirm the last buffer's duration ≈ time from final AU to Ctrl-C.
 - Gates 4.3 (lifecycle/sequential sessions) and 4.4 (slow downstream, keyframe recovery).
+- Portrait regression rerun after §16a (confirm `rotation=0`, unchanged picture) — not re-verified same-session as the landscape pass.
+- Sequential portrait→landscape→portrait session in one lipstick run (exercises §16a's generation-change rotation switch together with Gate 4.3).
 - Deferred: device decoder stall (Section 12); `.mkv` classification; `low-latency` property.
 
 ## 18. Redeployed `hwenc` set — raw-over-TCP works (2026-09-28)
