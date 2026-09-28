@@ -10,3 +10,7 @@
 	path = qt5-qpa-hwcomposer-plugin
 	url = git@github.com:b100dian/qt5-qpa-hwcomposer-plugin.git
 	branch = hwenc
+[submodule "libhybris"]
+	path = libhybris
+	url = git@github.com:b100dian/libhybris-rpm.git
+	branch = hwenc

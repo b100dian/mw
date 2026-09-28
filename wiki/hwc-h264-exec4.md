@@ -316,9 +316,44 @@ The only commit on `libhybris/libhybris` branch `hwenc` (not an `mw` submodule).
 
 **Product direction:** the element's output contract already equals the Android Auto video payload (Annex-B AUs with PTS, self-contained IDRs). Containers and RTP are proofs and transports, not part of the element. Remaining element work for the live path is a low-latency mode (no duration lookahead) and, later, encoder parameter control (IDR request, bitrate change) if the head-unit protocol needs it.
 
-## 16. Open items before Gate 4 can close
+## 16. QPA: capture initialisation scoped to recording processes (working tree, not yet built)
 
-- Streaming run per Section 13 (B preferred: proves timing on a host player).
+On `hwenc` as committed, `HwComposerBackend::create()` passes `initLegacyHwComposerQuirks()` at the three HWC2 sites where upstream deliberately passes `NULL`. That was done to resolve the libminisf capture symbols, but it also runs `eglGetDisplay(EGL_DEFAULT_DISPLAY)` and `startMiniSurfaceFlinger()` in **every** process that loads the plugin, and `startMiniSurfaceFlinger()` now always calls `ScreenCaptureService::instantiate()`. Any second process using the plugin therefore registers (and, `addService` being a replace, can take over) `sailfish.screencap`.
+
+`startMiniSurfaceFlinger()` itself is required in the capture process: it is the only place `sailfish.screencap` is registered (`minisfservice` does not) and it starts the Binder thread pool that serves it. The QPA bridge finds the recorder's producer through that service.
+
+**Change** (`hwcomposer/hwcomposer_backend.cpp`): symbol resolution is split into `resolveMinisfScreenCaptureApi(void *libminisf)`; the three HWC2 sites call a new `initScreenCaptureQuirks()`, which
+
+- returns `NULL` unless `QPA_HWC_SCREENCAP` is `1`/`true` (same spelling as the mode check in `HwComposerBackend_v20`), so a non-recording process behaves exactly like upstream;
+- otherwise `android_dlopen("libminisf.so")`, resolves the capture symbols and calls `startMiniSurfaceFlinger()`.
+
+`initLegacyHwComposerQuirks()` keeps its original behaviour for the HWC v0/v1.x paths and now calls the shared resolver. No new requirement: `HwComposerBackend_v20` already reads `QPA_HWC_SCREENCAP` once at startup. The one behavioural difference from committed `hwenc` in the capture process is that `eglGetDisplay(EGL_DEFAULT_DISPLAY)` is no longer called early (upstream does not call it on HWC2 either).
+
+The `QPA_HWC_SCREENCAP*` variables belong in lipstick's environment only, not in a system-wide environment file. `/var/lib/environment/compositor/*.conf` is also read by the encryption ask-password UI (it runs before lipstick), so use a lipstick drop-in instead:
+
+```ini
+# /etc/systemd/user/lipstick.service.d/51-screencap.conf
+[Service]
+Environment=QPA_HWC_SCREENCAP=1
+Environment=QPA_HWC_SCREENCAP_SOURCE=1
+Environment=QPA_HWC_SCREENCAP_FLIP_Y=1
+# Environment=QPA_HWC_SCREENCAP_DEBUG=1   (per-frame logging; presence-checked, =0 also enables)
+```
+
+`FLIP_Y` and `DEBUG` are presence-checked; `FRAME_SKIP` (default 1), `FRAME_LIMIT` (default 0 = unlimited) and `FPS` (default: recorder session) are diagnostics.
+
+**To validate:** rebuild and deploy `qt5-qpa-hwcomposer-plugin`, rerun the Gate 4.1 command, and confirm lipstick logs `screencap: post-swap HWC source enabled` and picks up the recorder session.
+
+## 17. Open items before Gate 4 can close
+
+- Streaming variant B (RTP, proves timing on a host player).
 - Element tail-duration proof: `droidscreencapsrc … ! identity silent=false ! fakesink`, confirm the last buffer's duration ≈ time from final AU to Ctrl-C.
 - Gates 4.3 (lifecycle/sequential sessions) and 4.4 (slow downstream, keyframe recovery).
-- Deferred: device decoder stall (Section 12); libhybris dependency test (Section 14); `.mkv` classification; `low-latency` property.
+- Deferred: device decoder stall (Section 12); `.mkv` classification; `low-latency` property.
+
+## 18. Redeployed `hwenc` set — raw-over-TCP works (2026-09-28)
+
+Deployed: droidmedia, droidmedia-devel, `gstreamer1.0-droid`, `qt5-qpa-hwcomposer-plugin` (hwenc builds); capture variables set through the lipstick drop-in (Section 16). **libhybris `8ac75ab` not deployed** — stock `eglplatform_hwcomposer.so`.
+
+- Streaming variant A (raw Annex-B over `tcpserversink`, Section 13) plays on the host. The earlier stall is not reproduced.
+- Section 14 settled: with stock libhybris capture works, so `8ac75ab` is a correctness cleanup, not a prerequisite. It stays in the review set.
