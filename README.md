@@ -19,7 +19,7 @@ Three submodules carry the change, each on branch `hwenc`:
 | Submodule | Change | `hwenc` tip | `hwenc-gate4` tag | Upstream |
 |---|---|---|---|---|
 | `droidmedia` | encoder API, `sailfish.screencap` service, libminisf bridge | `ddf4d30` | `29762d5` | `sailfishos/droidmedia` (`master`) |
-| `gst-droid` | `droidscreencapsrc` element | `a94f138` | `6688db2` | `sailfishos/gst-droid` (`master`) |
+| `gst-droid` | `droidscreencapsrc` element | `75a847b` | `6688db2` | `sailfishos/gst-droid` (`master`) |
 | `qt5-qpa-hwcomposer-plugin` | draws the display into the encoder Surface | `ab08f5e` | `3f6d3ea` | `mer-hybris/qt5-qpa-hwcomposer-plugin` (`master`) |
 
 - `hwenc` is a series of small cleanup commits on top of the code that passed
@@ -132,13 +132,12 @@ session and lipstick detaches at its next poll.
   next IDR (one per second).
 - **PTS:** start at 0 with the first access unit, are monotonic, and keep
   idle periods as gaps rather than repeated frames. DTS is unset.
-- **Duration:** each access unit is held until the next arrives, so its
-  duration covers the gap up to it. The last one lasts until the recording
-  stopped.
-  - The cost is one frame of latency: during an idle period, a live viewer
-    sees the frame before the last one.
-  - `h264parse` recomputes durations, so the tail is only visible at the
-    element boundary.
+- **Duration:** unset. Each access unit is pushed as soon as the encoder
+  delivers it, so a live viewer gets the last change before an idle period
+  at once. `h264parse` sets a nominal duration, and muxers take sample
+  durations from the next PTS.
+  - The cost is the tail: an MP4 ends one nominal frame after the last
+    screen change, not when the recording stopped.
 - **EOS:** the element intercepts EOS in `send_event()`. It withdraws the
   Surface, signals end of input and drains the encoder before returning EOS,
   so no access unit is lost (about 0.5 s).
@@ -197,7 +196,9 @@ plugin.
 
 The service is registered by `minisfservice` for the first time. If
 `droidscreencapsrc` reports that `sailfish.screencap` is not running, check
-`dmesg | grep avc` and `logcat -s ScreenCaptureService`.
+that `minisfservice` was restarted after the install (`pgrep -a
+minisfservice`), then look for SELinux denials with `logcat -d | grep avc`.
+The service manager logs them to logcat, not to `dmesg`.
 
 ### Rollback
 
@@ -229,7 +230,13 @@ Streaming scripts in [`scripts/`](scripts):
 
 - **TCP, raw Annex B** (tested): run `sharing-tcp.sh` on the phone (60 fps,
   port 5000) and `PHONE_IP=... receiving-tcp.sh` (ffplay) on the host. There
-  are no timestamps on the wire, so idle gaps collapse in the player.
+  are no timestamps or frame boundaries on the wire: idle gaps collapse in
+  the player, and ffplay shows a frame only once the next one starts.
+  - Muxing into Matroska avoids both: add `h264parse ! matroskamux
+    streamable=true` before `tcpserversink`, and play it with `ffplay
+    -fflags nobuffer -flags low_delay -f matroska tcp://$PHONE_IP:5000`.
+    ffplay refuses `-framerate` with Matroska. Checked with a test stream on
+    a PC, not yet with the phone.
 - **RTP** (not yet tested): `sharing-rtp.sh` with `receiving-rtp.sh` or
   `screen.sdp`. Before using them:
   - set `udpsink host=` in `sharing-rtp.sh` to the receiver's address;
@@ -249,20 +256,28 @@ The commands for VLC and MPEG-TS receivers are in
 - Raw Annex B over TCP at 60 fps, played live on a host.
 - Stock libhybris is enough.
 
+**Passed on the device with the cleaned-up `hwenc` tip (2026-10-15,
+gst-droid at `a94f138`):**
+- `gst-inspect-1.0`: properties, rank none.
+- Portrait and landscape recordings, raw and MP4; live over TCP.
+- Portrait, landscape and portrait again in one lipstick run (Gate 4.3).
+- Recorder killed with `kill -9`: the session ends and the next one works.
+- Lipstick without `QPA_HWC_SCREENCAP`, the droidmedia-only tool, and camera
+  recording.
+
 **Not yet run on the device:**
-- the cleaned-up `hwenc` tip;
+- gst-droid `75a847b` (access units pushed at once);
 - the RTP proof;
-- sequential sessions (Gate 4.3);
-- slow downstream and keyframe recovery (Gate 4.4);
-- the tail-duration proof at the element boundary
-  (`... ! identity silent=false ! fakesink`);
-- a portrait rerun in the same lipstick session as a landscape one.
+- slow downstream and keyframe recovery (Gate 4.4).
 
 **Known limits:**
 - After a session starts, the first frame arrives at the next screen update.
   An idle screen produces no frames until something changes.
 - The landscape default (270) fits one landscape direction only; the
   rotation doesn't follow lipstick's orientation.
+- Lipstick captures at most one frame per 1/fps. A frame that comes sooner
+  is dropped; if it is the last before an idle period, the recording keeps
+  the previous frame until the screen changes again.
 - The recording size must be the display size or its transpose; anything
   else is rejected (Android Auto sizes are the next goal).
 - Gallery can't play any video on this device, including files not made by
