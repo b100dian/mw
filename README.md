@@ -19,8 +19,8 @@ Three submodules carry the change, each on branch `hwenc`:
 | Submodule | Change | `hwenc` tip | `hwenc-gate4` tag | Upstream |
 |---|---|---|---|---|
 | `droidmedia` | encoder API, `sailfish.screencap` service, libminisf bridge | `ddf4d30` | `29762d5` | `sailfishos/droidmedia` (`master`) |
-| `gst-droid` | `droidscreencapsrc` element | `75a847b` | `6688db2` | `sailfishos/gst-droid` (`master`) |
-| `qt5-qpa-hwcomposer-plugin` | draws the display into the encoder Surface | `ab08f5e` | `3f6d3ea` | `mer-hybris/qt5-qpa-hwcomposer-plugin` (`master`) |
+| `gst-droid` | `droidscreencapsrc` element | `730ad2f` | `6688db2` | `sailfishos/gst-droid` (`master`) |
+| `qt5-qpa-hwcomposer-plugin` | draws the display into the encoder Surface | `03fd704` | `3f6d3ea` | `mer-hybris/qt5-qpa-hwcomposer-plugin` (`master`) |
 
 - `hwenc` is a series of small cleanup commits on top of the code that passed
   Gate 4. It shows `git diff master..hwenc` as the reviewable change, and is
@@ -81,7 +81,7 @@ Three submodules carry the change, each on branch `hwenc`:
         |                             |                        |  size == display    -> rotation 0
         |                             |                        |  size == transpose  -> rotation 90/270
         |                             |                        |  otherwise          -> reject N (logged)
-        |<===== frames: queueBuffer on the encoder Surface ====|  after each primary swap, paced to fps
+        |<===== frames: queueBuffer on the encoder Surface ====|  after each primary swap
         |  output thread -> data_available(AU, ts)             |
         |                             |                        |
  EOS (gst-launch -e / Ctrl-C):        |                        |
@@ -109,7 +109,6 @@ session and lipstick detaches at its next poll.
 4. `captureFrame()`:
    - polls the session, at most every 250 ms (a Binder call on the render
      thread), then attaches, detaches or rejects;
-   - paces to the session's fps;
    - waits up to 250 ms for the fence;
    - switches to its private EGL context with a scoped guard;
    - imports the buffer as an EGLImage texture (cached per buffer);
@@ -169,7 +168,9 @@ Element properties:
 - `width`, `height` (required): the display size, or its transpose for
   landscape (`2520x1080` on this phone).
 - `target-bitrate` (default 8000000).
-- `fps` (default 30, at most 120).
+- `fps` (default 30, at most 120): the encoder's nominal frame rate and the
+  caps framerate. Lipstick sends every frame it renders, so set it to the
+  display refresh rate (60 on this phone).
 
 ## Build and deploy
 
@@ -210,11 +211,11 @@ that set, with the extra drop-in variables listed under
 
 ```sh
 # Raw H.264 (portrait; use width=2520 height=1080 for landscape)
-gst-launch-1.0 -e droidscreencapsrc width=1080 height=2520 target-bitrate=8000000 fps=30 ! \
+gst-launch-1.0 -e droidscreencapsrc width=1080 height=2520 target-bitrate=8000000 fps=60 ! \
   h264parse ! filesink location=/tmp/screen.h264
 
 # MP4
-gst-launch-1.0 -e droidscreencapsrc width=1080 height=2520 target-bitrate=8000000 fps=30 ! \
+gst-launch-1.0 -e droidscreencapsrc width=1080 height=2520 target-bitrate=8000000 fps=60 ! \
   h264parse config-interval=-1 ! video/x-h264,stream-format=avc,alignment=au ! \
   qtmux ! filesink location=/tmp/screen.mp4
 
@@ -265,8 +266,12 @@ gst-droid at `a94f138`):**
 - Lipstick without `QPA_HWC_SCREENCAP`, the droidmedia-only tool, and camera
   recording.
 
+**Passed on the device with gst-droid `75a847b` (2026-10-16):** live over TCP
+through Matroska at `fps=120`, which drops no frame on this 60 Hz display.
+After typing, the view shows the last change at once.
+
 **Not yet run on the device:**
-- gst-droid `75a847b` (access units pushed at once);
+- qt5-qpa-hwcomposer-plugin `03fd704` (every frame sent, at any fps);
 - the RTP proof;
 - slow downstream and keyframe recovery (Gate 4.4).
 
@@ -275,9 +280,6 @@ gst-droid at `a94f138`):**
   An idle screen produces no frames until something changes.
 - The landscape default (270) fits one landscape direction only; the
   rotation doesn't follow lipstick's orientation.
-- Lipstick captures at most one frame per 1/fps. A frame that comes sooner
-  is dropped; if it is the last before an idle period, the recording keeps
-  the previous frame until the screen changes again.
 - The recording size must be the display size or its transpose; anything
   else is rejected (Android Auto sizes are the next goal).
 - Gallery can't play any video on this device, including files not made by
