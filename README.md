@@ -18,9 +18,9 @@ Three submodules carry the change, each on branch `hwenc`:
 
 | Submodule | Change | `hwenc` tip | `hwenc-gate4` tag | Upstream |
 |---|---|---|---|---|
-| `droidmedia` | encoder API, `sailfish.screencap` service, libminisf bridge | `ddf4d30` | `29762d5` | `sailfishos/droidmedia` (`master`) |
-| `gst-droid` | `droidscreencapsrc` element | `730ad2f` | `6688db2` | `sailfishos/gst-droid` (`master`) |
-| `qt5-qpa-hwcomposer-plugin` | draws the display into the encoder Surface | `03fd704` | `3f6d3ea` | `mer-hybris/qt5-qpa-hwcomposer-plugin` (`master`) |
+| `droidmedia` | encoder API, `sailfish.screencap` service, libminisf bridge | `21a2cbf` | `29762d5` | `sailfishos/droidmedia` (`master`) |
+| `gst-droid` | `droidscreencapsrc` element | `b85836e` | `6688db2` | `sailfishos/gst-droid` (`master`) |
+| `qt5-qpa-hwcomposer-plugin` | draws the display into the encoder Surface | `643f56a` | `3f6d3ea` | `mer-hybris/qt5-qpa-hwcomposer-plugin` (`master`) |
 
 - `hwenc` is a series of small cleanup commits on top of the code that passed
   Gate 4. It shows `git diff master..hwenc` as the reviewable change, and is
@@ -168,9 +168,9 @@ Element properties:
 - `width`, `height` (required): the display size, or its transpose for
   landscape (`2520x1080` on this phone).
 - `target-bitrate` (default 8000000).
-- `fps` (default 30, at most 120): the encoder's nominal frame rate and the
-  caps framerate. Lipstick sends every frame it renders, so set it to the
-  display refresh rate (60 on this phone).
+- `fps` (default 60, at most 120): the encoder's nominal frame rate and the
+  caps framerate. Lipstick sends every frame it renders, so it should match
+  the display refresh rate.
 
 ## Build and deploy
 
@@ -233,11 +233,6 @@ Streaming scripts in [`scripts/`](scripts):
   port 5000) and `PHONE_IP=... receiving-tcp.sh` (ffplay) on the host. There
   are no timestamps or frame boundaries on the wire: idle gaps collapse in
   the player, and ffplay shows a frame only once the next one starts.
-  - Muxing into Matroska avoids both: add `h264parse ! matroskamux
-    streamable=true` before `tcpserversink`, and play it with `ffplay
-    -fflags nobuffer -flags low_delay -f matroska tcp://$PHONE_IP:5000`.
-    ffplay refuses `-framerate` with Matroska. Checked with a test stream on
-    a PC, not yet with the phone.
 - **RTP** (not yet tested): `sharing-rtp.sh` with `receiving-rtp.sh` or
   `screen.sdp`. Before using them:
   - set `udpsink host=` in `sharing-rtp.sh` to the receiver's address;
@@ -258,7 +253,7 @@ The commands for VLC and MPEG-TS receivers are in
 - Stock libhybris is enough.
 
 **Passed on the device with the cleaned-up `hwenc` tip (2026-10-15,
-gst-droid at `a94f138`):**
+gst-droid at `40d446a`):**
 - `gst-inspect-1.0`: properties, rank none.
 - Portrait and landscape recordings, raw and MP4; live over TCP.
 - Portrait, landscape and portrait again in one lipstick run (Gate 4.3).
@@ -266,12 +261,12 @@ gst-droid at `a94f138`):**
 - Lipstick without `QPA_HWC_SCREENCAP`, the droidmedia-only tool, and camera
   recording.
 
-**Passed on the device with gst-droid `75a847b` (2026-10-16):** live over TCP
-through Matroska at `fps=120`, which drops no frame on this 60 Hz display.
+**Passed on the device with gst-droid `3a7e560` (2026-10-16):** live over TCP
+at `fps=120`, which drops no frame on this 60 Hz display.
 After typing, the view shows the last change at once.
 
 **Not yet run on the device:**
-- qt5-qpa-hwcomposer-plugin `03fd704` (every frame sent, at any fps);
+- qt5-qpa-hwcomposer-plugin `643f56a` (every frame sent, at any fps);
 - the RTP proof;
 - slow downstream and keyframe recovery (Gate 4.4).
 
