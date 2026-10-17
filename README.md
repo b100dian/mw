@@ -40,11 +40,11 @@ Three submodules carry the change, each on branch `hwenc`:
  |   v                      |              |      |   "sailfish.screencap"              |
  | libdroidmedia via libhybris             | reg/ |   {producer, w, h, fps, generation} |
  |   DroidMediaScreenCapture  -------------+unreg>|                                     |
- |   MediaCodec HW AVC --> output thread   |      +------------------^------------------+
- |   input Surface = IGraphicBufferProducer|                         | getProducer
- +-------------------^---------------------+                         | (<= every 250 ms)
-                     | queueBuffer over Binder (GPU buffers only)    |
- lipstick -----------+-----------------------------------------------+------------------
+ |   MediaCodec HW AVC --> output thread   |      +------------------^-------|----------+
+ |   input Surface = IGraphicBufferProducer|        registerListener |       | sessionChanged
+ +-------------------^---------------------+          getProducer    |       | (oneway)
+                     | queueBuffer over Binder (GPU buffers only)    |       v
+ lipstick -----------+-----------------------------------------------+-------+----------
  | Qt scene graph -> eglSwapBuffers(primary HWC window)
  |   HWC2Window::present(): HwComposerScreenCapture keeps buffer + dup(acquire fence)
  |   swap returned -> HwComposerScreenCapture::captureFrame()
@@ -62,8 +62,10 @@ Three submodules carry the change, each on branch `hwenc`:
   hosted by `minisfservice`. It holds one session; every registration gets a
   new generation, and the session ends when the recorder unregisters or dies.
 - **libminisf** (`droidmedia/minisf_screen_capture.cpp`) gives the compositor
-  four C entry points, which look the service up with `checkService()` and
-  never block.
+  four C entry points. It subscribes to the service and keeps the session the
+  service pushes, so a session query is a local read. While the service is
+  missing, it looks it up with `checkService()`, at most every 250 ms, and
+  never blocks.
 - **`HwComposerScreenCapture`**
   (`qt5-qpa-hwcomposer-plugin/hwcomposer/hwcomposer_screencapture.{h,cpp}`)
   runs inside lipstick when `QPA_HWC_SCREENCAP=1` and draws into the
@@ -73,11 +75,12 @@ Three submodules carry the change, each on branch `hwenc`:
 
 ```
  recorder (droidscreencapsrc)    minisfservice           lipstick (QPA)
-        |                             |                        |
+        |                             |<-- registerListener ---|  once, on lipstick's first frame
+        |                             |--- no session -------->|
  start: MediaCodec configure, createInputSurface, start        |
         |-- registerProducer -------->| generation N           |
-        |                             |<-- session_query ------|  poll, at most every 250 ms
-        |                             |--- N, w x h @ fps ---->|
+        |                             |--- sessionChanged ---->|  N, w x h @ fps (oneway)
+        |                             |                        |  at the next frame:
         |                             |                        |  size == display    -> rotation 0
         |                             |                        |  size == transpose  -> rotation 90/270
         |                             |                        |  otherwise          -> reject N (logged)
@@ -86,15 +89,18 @@ Three submodules carry the change, each on branch `hwenc`:
         |                             |                        |
  EOS (gst-launch -e / Ctrl-C):        |                        |
  finish: unregisterProducer(N) ------>| session ended          |
-        |  500 ms detach grace        |<-- session_query ------|  inactive -> detach,
-        |                             |                        |  destroy EGL surface
+        |                             |--- sessionChanged ---->|  no session: at the next
+        |  100 ms detach grace        |                        |  frame, detach and destroy
+        |                             |                        |  the EGL surface
         |  signalEndOfInputStream                              |
         |  drain to the codec's EOS -> signal_eos -> GST_FLOW_EOS
         |  stop codec                                          |
 ```
 
 If the recorder dies instead, the service's death notification ends the
-session and lipstick detaches at its next poll.
+session and tells lipstick, which detaches at its next frame. If
+`minisfservice` dies, lipstick drops the session and subscribes again once
+the service is back.
 
 ## Per-frame path in lipstick
 
@@ -107,8 +113,9 @@ session and lipstick detaches at its next poll.
    `captureFrame()`. Capture never runs inside `present()`, because EGL must
    not be re-entered there.
 4. `captureFrame()`:
-   - polls the session, at most every 250 ms (a Binder call on the render
-     thread), then attaches, detaches or rejects;
+   - checks the session that libminisf keeps (no Binder call), then
+     attaches, detaches or rejects. Attaching makes one Binder call, to get
+     the Surface's producer;
    - waits up to 250 ms for the fence;
    - switches to its private EGL context with a scoped guard;
    - imports the buffer as an EGLImage texture (cached per buffer);
@@ -139,7 +146,7 @@ session and lipstick detaches at its next poll.
     screen change, not when the recording stopped.
 - **EOS:** the element intercepts EOS in `send_event()`. It withdraws the
   Surface, signals end of input and drains the encoder before returning EOS,
-  so no access unit is lost (about 0.5 s).
+  so no access unit is lost (the 100 ms detach grace plus the drain).
 - **Overload:** a bound of 30 frames or 8 MiB. When it's exceeded, queued
   access units are dropped up to the next IDR, with one warning per episode.
   A repeated PTS is dropped; a regressing PTS is an error.
@@ -267,6 +274,9 @@ After typing, the view shows the last change at once.
 
 **Not yet run on the device:**
 - qt5-qpa-hwcomposer-plugin `643f56a` (every frame sent, at any fps);
+- push-mode session updates (uncommitted): libminisf subscribes to
+  `sailfish.screencap` instead of polling it, and the detach grace is 100 ms
+  instead of 500 ms. The wiki logs describe the polling design;
 - the RTP proof;
 - slow downstream and keyframe recovery (Gate 4.4).
 
