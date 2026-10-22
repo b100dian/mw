@@ -155,7 +155,7 @@ Notes from the run:
   - At `hwenc-gate4`, lipstick registered the service through `startMiniSurfaceFlinger()`. Now only `minisfservice` does, so an old `minisfservice` that wasn't restarted, or an SELinux denial, would cause the message.
   - It went away on the device; the exact cause wasn't recorded.
 - **SELinux denials** from the service manager appear in logcat, not `dmesg`. The README and the checklist said `dmesg`; the README is fixed.
-- **Checklist step 9 was wrong.** It checked that `grep minisf /proc/$(pidof lipstick)/maps` is empty, but master QPA always loads libminisf for `startMiniSurfaceFlinger()`. Check instead that there is no `screencap: enabled` line in the journal.
+- **Checklist step 9 was wrong.** It checked that `grep minisf /proc/$(pidof lipstick)/maps` is empty, but master QPA always loads libminisf for `startMiniSurfaceFlinger()` (only true for HWC1, see §7). Check instead that there is no `screencap: enabled` line in the journal.
 - **Killing the recorder:** start the recording in one SSH session, then `pkill -9 -f droidscreencapsrc` from another.
   - Expect `Recorder died, session N ended` in logcat (`-s ScreenCaptureService`) and `screencap: session N ended, detaching` in lipstick's journal.
   - Record raw `.h264` for this test, because a killed MP4 has no index.
@@ -224,3 +224,11 @@ Symptom: after typing in the Terminal app, the live view on the PC kept the fram
   - landscape rotation that follows lipstick's orientation.
 
 **Rollback:** `git checkout hwenc-gate4` in the three submodules, rebuild and redeploy that set, and add `QPA_HWC_SCREENCAP_SOURCE=1` and `QPA_HWC_SCREENCAP_FLIP_Y=1` to the lipstick drop-in.
+
+## 7. Corrections (2026-10-18)
+
+- **libminisf in lipstick on HWC2.** §4 says master QPA always loads libminisf for `startMiniSurfaceFlinger()`. Only the HWC 0.x/1.x backends do: `initLegacyHwComposerQuirks()` loads it and is called only for them (`hwcomposer_backend.cpp:149–181`). Every HWC2 path creates `HwComposerBackend_v20(NULL, NULL)`, without libminisf and without `startMiniSurfaceFlinger()`.
+  - On the Xperia 5 IV (HWC2), `HwComposerScreenCapture::create()` is the only place lipstick loads libminisf, and libminisf's `startThreadPool()` starts lipstick's `/dev/binder` thread pool. Lipstick needs it for incoming calls: the encoder queue's buffer-released callbacks to the `Surface`, and, with push-mode session updates, `sessionChanged` and the death of `minisfservice`.
+  - The checklist step 9 explanation is therefore wrong for this phone. If `/proc/<lipstick>/maps` listed libminisf with capture disabled, something else loaded it; that was not investigated. The replacement check (no `screencap: enabled` line in the journal) stays valid.
+  - The `SurfaceFlingerAIDL` follow-up (`startMiniSurfaceFlinger()` checks for `"SurfaceFlinger"`) only affects HWC1 devices.
+- **"sailfish.screencap is not running"** (§4) reappeared after installing a new droidmedia: the old `minisfservice` was still running. `kill $(pgrep minisfservice)` fixed it; init restarts the service. `setprop svc.stop …` does nothing; init's control property is `ctl.restart minisf`, with the service name from `init/minisfservice.rc`.

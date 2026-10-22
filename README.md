@@ -187,7 +187,7 @@ packages are a matched set: the API and the Binder interface changed together.
 1. **droidmedia, Android side.** In the HADK `croot`:
    `make libdroidmedia libminisf minisfservice screencap_surface_capture_test`,
    then the droidmedia RPM as usual:
-   `rpm/dhd/helpers/build_packages.sh -b hybris/mw/droidmedia`. It ships
+   `rpm/dhd/helpers/build_packages.sh -g`. It builds ships
    `libdroidmedia.so`, `libminisf.so`, `minisfservice` and
    `screencap_surface_capture_test`.
 2. **droidmedia-devel**, which gst-droid needs (PlatformSDK):
