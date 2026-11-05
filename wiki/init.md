@@ -6,6 +6,12 @@ Building is done manually with me entering PlatformSDK or Android croot respetiv
 
 All commits in this repository and in all submodules are done by me.
 
+Code comments describe the current state, not the timeline that led to it: reviewers read the squashed `master..hwenc` diff and never see the intermediate versions (e.g. no "no Binder call" or "instead of polling" once polling is gone). History goes in the wiki logs and commit messages.
+
 The last document now is cleanup-plan.md: the cleanup of the `hwenc` branches into reviewable commits (pre-cleanup heads tagged `hwenc-gate4`), with the notes of that session, including the stale-last-frame fixes and the open items. Before it, hwc-h264-encoding-revision4.md was the plan and hwc-h264-exec4.md its execution log. The overview of the current state is ../README.md.
 
-The next goal, Android Auto compatible resolutions (Option A mirror/letterbox for testing, Option B2 nested car compositor as the final solution, plus a removal list for the next refactor), is planned in auto-goal1.md.
+The next goal, Android Auto compatible resolutions (Option A mirror/letterbox for testing, Option B2 nested car compositor as the final solution, plus a removal list for the next refactor), is planned in auto-goal1.md. Its first step, everything the upstream repositories need (encoder profile and keyframes, the session contract, Option A, the B2 spike), is gate-5.md, and gate-5-exec.md is its execution log.
+
+After gate-5-exec.md, gate-5-tweaks.md prepares the `master..hwenc` diff for review: comment cleanup, reuse of existing types, and a smaller diff. gate-5-tweaks-exec.md is its execution log, with the deviations from that plan and the host test results. Build notes for PlatformSDK, HADK and the host are in building.md.
+
+The device run after every deploy is checklist.md. A change that adds or alters device behaviour updates its steps in the same change; the results go in the exec log of the build under test, by step number.

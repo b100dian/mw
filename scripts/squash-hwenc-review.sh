@@ -126,8 +126,15 @@ Add hardware screen capture API and minisf capture service
 Implement hardware-accelerated H.264 screen capture via MediaCodec surface input:
 - Add DroidMediaScreenCapture API with asynchronous callbacks (data_available,
   error, signal_eos) and CLOCK_MONOTONIC nanosecond timestamps.
+- Take the H.264 profile and level from DroidMediaCodecEncoderMetaData (public
+  DroidMediaCodecH264Profile/Level enums), sharing
+  droid_media_codec_set_h264_profile_level() with the camera encoder.
 - Add sailfish.IScreenCaptureService hosted in minisfservice with generation
   tracking to coordinate display frame producers and the encoder consumer.
+- Give each session a target (DISPLAY or VIRTUAL) and a content rect
+  (DroidMediaRect), set with droid_media_screen_capture_set_target().
+- Add droid_media_screen_capture_request_sync_frame(): the next frame is an IDR,
+  and the renderer is asked for it, also on an idle screen.
 - Export droid_media_screen_capture_* through hybris.c.
 - Include screencap_surface_capture_test standalone test utility.
 MSG
@@ -139,7 +146,9 @@ Add droidscreencapsrc element for hardware screen capture
 Implement GStreamer element droidscreencapsrc using droidmediascreencapture:
 - Capture screen frames directly into GstBuffers with monotonic PTS.
 - Push access units immediately as they are encoded, preserving idle gaps.
-- Expose properties for width, height, target-bitrate, and nominal fps.
+- Expose properties for width, height, target-bitrate, nominal fps, H.264
+  profile and level, target, and content-rect (<x, y, width, height>).
+- Answer an upstream GstForceKeyUnit with an IDR of the current screen.
 - Register with GST_RANK_NONE to avoid auto-selection over camera sources.
 MSG
       ;;
@@ -151,7 +160,10 @@ Implement display frame capture in the HWC2 compositor backend:
 - Add HwComposerScreenCapture to capture presented frames via libminisf.
 - Render the current display buffer into the encoder Surface using a private
   EGL context and EGLImage texture target.
-- Support display orientation and 90/270 degree rotation.
+- Fit the display into any even session size and content rect (captureFit()):
+  aspect ratio kept, black bars, turned by 90 or 270 degrees for the other
+  orientation.
+- Render DISPLAY sessions only; repaint on session changes and frame requests.
 - Enable conditionally via QPA_HWC_SCREENCAP environment variable.
 MSG
       ;;
