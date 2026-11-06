@@ -430,13 +430,39 @@ Record 5 s of video in the Camera app.
 
 Pass: it plays in Gallery.
 
+## 17. B2 spike: a second process renders a `VIRTUAL` session
+
+Gate 5.4. Build `b2-spike` in the PlatformSDK first (`tools/b2-spike/README.md`). The spike animates for 5 s, pauses for 5 s and animates for 5 s, counting only the time it is attached.
+
+`[phone]` Don't touch the screen:
+```sh
+. ~/sc/host; scp -q "$HOST:$MW/tools/b2-spike/b2-spike" ~/
+sc-mp4 virtual 30 target=virtual width=1280 height=720 &
+EGL_PLATFORM=hwcomposer ~/b2-spike 2>&1 | tee /tmp/b2.log
+wait
+ffprobe -v error -show_entries packet=pts_time -of csv=p=0 ~/Videos/sc-virtual.mp4
+devel-su journalctl -b --since -1min | grep screencap:
+sc-push ~/Videos/sc-virtual.mp4 /tmp/b2.log
+```
+`[host]`
+```sh
+ffplay -v error sc-virtual.mp4
+```
+Pass:
+- the spike prints `eglBindWaylandDisplayWL: EGL_TRUE`, `attached to session N: 1280x720 …`, `pause`, `animate`, then `render: PASS` and `wayland bind: PASS`;
+- the packet times are dense, then show a gap of about 5 s, then are dense again;
+- exactly one `screencap: ignoring session N: target 1 is not the display`, and no `attached`;
+- the video shows colour bars, a moving black bar and the frame counter at the top left, frozen for about 5 s in the middle.
+
+Record the spike's `mapped composer/hwc libraries` list. The README compares it with a baseline.
+
 ## Not covered yet
 
 - RTP (`scripts/sharing-rtp.sh`).
 - Slow downstream and keyframe recovery (Gate 4.4).
 - Whether the 100 ms detach grace keeps the last frame of a recording.
 - Gate 5.3, the head-unit path.
-- Gate 5.4, the B2 spike: rendering a `VIRTUAL` session.
+- Gate 5.4's other checks (the HWC baseline, recorder restart, `FRAME_REQUESTED` during the pause): `tools/b2-spike/README.md`.
 
 ## Results
 

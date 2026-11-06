@@ -31,27 +31,20 @@ Three submodules carry the change, each on branch `hwenc`:
 ## Components
 
 ```
- recorder process (gst-launch ...)                minisfservice (droid-hal-init, Android)
- +-----------------------------------------+      +-------------------------------------+
- | droidscreencapsrc (gst-droid, Linux)    |      | MiniSurfaceFlinger                  |
- |   start/finish/stop/sync ^ AUs + PTS    |      | ScreenCaptureService                |
- |   v                      |              |      |   "sailfish.screencap"              |
- | libdroidmedia via libhybris             | reg/ |   {producer, w, h, fps, target,     |
- |   DroidMediaScreenCapture  -------------+unreg/|    content rect, generation}        |
- |   MediaCodec HW AVC --> output thread   |frame>|                                     |
- |   input Surface = IGraphicBufferProducer|      +------------------^-------|----------+
- +-------------------^---------------------+        registerListener |       | sessionChanged,
-                     |                                getProducer    |       | frameRequested
-                     | queueBuffer over Binder (GPU buffers only)    |       v (oneway)
- lipstick -----------+-----------------------------------------------+-------+----------
- | libminisf callback (Binder thread) -> posted event -> update() on exposed windows
- | Qt scene graph -> eglSwapBuffers(primary HWC window)
- |   HWC2Window::present(): HwComposerScreenCapture keeps buffer + dup(acquire fence)
- |   swap returned -> HwComposerScreenCapture::captureFrame()
- |     wait fence -> EGLImage(HWC buffer) -> clear, 1 textured quad in the fitted
- |     viewport (y-flip, rotate 0/90/270)
- |     -> eglPresentationTimeANDROID(CLOCK_MONOTONIC) -> eglSwapBuffers(encoder Surface)
- +----------------------------------------------------------------------------------------
+ recorder (gst-launch)                                    minisfservice
+ +------------------------------+  registerProducer,      +-------------------------+
+ | droidscreencapsrc            |  unregisterProducer,    | sailfish.screencap      |
+ | DroidMediaScreenCapture      |  requestFrame           | one session,            |
+ |   MediaCodec H.264 encoder   |------------------------>| generation N            |
+ |   input Surface              |                         +-------------------------+
+ +------------------------------+                             |                ^
+                ^                         sessionChanged,     |                | registerListener,
+                |                         frameRequested      v                | getProducer
+                |                         (oneway)        +-------------------------+
+                +--- frames: queueBuffer on the ----------| lipstick                |
+                     encoder Surface (GPU buffers,        | libminisf               |
+                     no CPU copy)                         | HwComposerScreenCapture |
+                                                          +-------------------------+
 ```
 
 - **`droidscreencapsrc`** (`gst-droid/gst/droidscreencapsrc/`) owns one
@@ -69,31 +62,26 @@ Three submodules carry the change, each on branch `hwenc`:
 - **libminisf** (`droidmedia/minisf_screen_capture.cpp`) gives the compositor
   five C entry points. It subscribes to the service and keeps the session the
   service pushes, so a session query is a local read. The query fills a
-  `ScreenCaptureSession`, which the plugin declares with the same layout. A
-  callback reports session changes and frame requests on a Binder thread.
+  `ScreenCaptureSession`; the plugin declares the same layout as
+  `MinisfScreenCaptureSessionInfo`. A callback reports session changes and
+  frame requests on a Binder thread.
   While the service is missing, it looks it up with `checkService()`, at most
   every 250 ms, and never blocks.
 - **`HwComposerScreenCapture`**
   (`qt5-qpa-hwcomposer-plugin/hwcomposer/hwcomposer_screencapture.{h,cpp}`)
   runs inside lipstick when `QPA_HWC_SCREENCAP=1` and draws into the Surface
-  of a `DISPLAY` session. The fit, `captureFit()` in
-  `hwcomposer_screencapture.h`, uses `QSize::scaled()`;
-  [`tools/screencap-fit-test`](tools/screencap-fit-test) checks it on the host.
+  of a `DISPLAY` session.
 
 ## Session sequence
 
 ```
  recorder (droidscreencapsrc)    minisfservice           lipstick (QPA)
-        |                             |<-- registerListener ---|  once, on lipstick's first frame
-        |                             |--- no session -------->|
+        |                             |<-- registerListener ---|  once, at lipstick's first frame
+        |                             |    returns: no session |
  start: MediaCodec configure, createInputSurface, start        |
         |-- registerProducer -------->| generation N           |
         |                             |--- sessionChanged ---->|  N, w x h @ fps, target, rect
-        |                             |                        |  (oneway). Lipstick repaints,
-        |                             |                        |  and at that frame:
-        |                             |                        |  VIRTUAL        -> ignore N (logged)
-        |                             |                        |  odd or > 4096  -> reject N (logged)
-        |                             |                        |  otherwise      -> attach, fit
+        |                             |    (oneway)            |  repaint; attach at that frame
         |<===== frames: queueBuffer on the encoder Surface ====|  after each primary swap
         |  output thread -> data_available(AU, ts)             |
         |                             |                        |
@@ -103,24 +91,23 @@ Three submodules carry the change, each on branch `hwenc`:
         |                             |                        |
  EOS (gst-launch -e / Ctrl-C):        |                        |
  finish: unregisterProducer(N) ------>| session ended          |
-        |                             |--- sessionChanged ---->|  no session: lipstick repaints,
-        |  100 ms detach grace        |                        |  detaches and destroys the
-        |                             |                        |  EGL surface
+        |                             |--- sessionChanged ---->|  no session: repaint, detach,
+        |  100 ms detach grace        |                        |  destroy the EGL surface
         |  signalEndOfInputStream                              |
         |  drain to the codec's EOS -> signal_eos -> GST_FLOW_EOS
         |  stop codec                                          |
 ```
 
+`registerListener` returns the current session and notifies no one; later
+changes come through `sessionChanged`. At the first frame after a new
+session, lipstick ignores a `VIRTUAL` session, rejects an odd size or one
+over 4096 (each with a log line, and the recording stays empty), and
+otherwise attaches and fits the display into the content rect.
+
 If the recorder dies instead, the service's death notification ends the
 session and tells lipstick, which repaints and detaches. If `minisfservice`
 dies, lipstick drops the session and subscribes again at its first frame
 after the service is back.
-
-The fit: when the content rect and the display have different
-orientations, the display is turned by `QPA_HWC_SCREENCAP_LANDSCAPE_ROTATION`.
-It is then scaled to fit the rect with its aspect ratio kept, rounded down to
-even sizes, and centred; the rest of the frame is black. The display size
-and its transpose still fill the frame exactly.
 
 ## Per-frame path in lipstick
 
@@ -146,6 +133,16 @@ and its transpose still fill the frame exactly.
 5. A failed fence wait, render or swap, or a swap longer than 250 ms, gives
    up on that generation. Lipstick carries on, and the next recorder session
    attaches normally.
+
+### The fit
+
+When the content rect and the display have different orientations, the
+display is turned by `QPA_HWC_SCREENCAP_LANDSCAPE_ROTATION`. It is then
+scaled to fit the rect with its aspect ratio kept, rounded down to even
+sizes, and centred; the rest of the frame is black. The display size and its
+transpose still fill the frame exactly. The code is `captureFit()` in
+`hwcomposer_screencapture.h`, built on `QSize::scaled()`;
+[`tools/screencap-fit-test`](tools/screencap-fit-test) checks it on the host.
 
 ## `droidscreencapsrc` output
 
@@ -195,9 +192,10 @@ Environment=QPA_HWC_SCREENCAP=1
   never loads libminisf.
 
 Element properties:
-- `width`, `height` (required): any even size up to 4096. The display is
-  fitted into it, turned for a landscape size; `1080x2520` and `2520x1080`
-  fill the frame on this phone.
+- `width`, `height` (required). Lipstick mirrors even sizes up to 4096 and
+  rejects others with a log line (the recording stays empty). The display is
+  fitted into the frame, turned for a landscape size; `1080x2520` and
+  `2520x1080` fill the frame on this phone.
 - `target-bitrate` (default 8000000).
 - `fps` (default 60, at most 120): the encoder's nominal frame rate and the
   caps framerate. Lipstick sends every frame it renders, so it should match
@@ -233,15 +231,9 @@ struct the plugin reads changed together.
    `rpm/dhd/helpers/build_packages.sh -b hybris/mw/qt5-qpa-hwcomposer-plugin`.
    It has no droidmedia build dependency.
 
-Copy `droidmedia*`, `gstreamer1.0-droid*` and `qt5-qpa*` (the first two
-bring their `-devel`, `-tools` and `droidmedia-flashlight` companions;
-`wiki/building.md`), install them in one `zypper in -f` (a rebuild of
-uncommitted droidmedia keeps its version), set up the drop-in, and
-**reboot**. That restarts `minisfservice` with the new service, and
-lipstick with the new plugin.
-
-Instead of the reboot, `kill $(pgrep minisfservice)` (init restarts it) and
-restart lipstick.
+To install them on the phone and restart `minisfservice` and lipstick, follow
+"On the device" in [`wiki/building.md`](wiki/building.md) or step 1 of
+[`wiki/checklist.md`](wiki/checklist.md).
 
 The service is registered by `minisfservice` for the first time. If
 `droidscreencapsrc` reports that `sailfish.screencap` is not running, check
@@ -362,4 +354,6 @@ The commands for VLC and MPEG-TS receivers are in
 | Cleanup | `cleanup-plan.md`: `hwenc` as reviewable commits; the pre-cleanup heads are tagged `hwenc-gate4`, with the rollback steps |
 | Next goal | `auto-goal1.md`: Android Auto resolutions (Option A mirror, Option B2 car compositor; its file and line references point at `hwenc-gate4`); its first step `gate-5.md`, executed in `gate-5-exec.md` |
 | Review prep | `gate-5-tweaks.md`: comment cleanup, reuse of existing types, a smaller `master..hwenc` diff; executed in `gate-5-tweaks-exec.md` |
+| Build | `building.md`: SDK, HADK, device install and host-only checks |
 | Device tests | `checklist.md`: the device run after every deploy; a change to device behaviour updates it |
+| Notes | `review.md` (code walkthrough), `improvement-ideas.md` (unplanned ideas), `lipstick-recorder-comparison.md` (lipstick2vnc's recorder compared with the QPA capture) |
