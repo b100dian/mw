@@ -460,6 +460,7 @@ Record the spike's `mapped composer/hwc libraries` list. The README compares it 
 
 - RTP (`scripts/sharing-rtp.sh`).
 - Slow downstream and keyframe recovery (Gate 4.4).
+- Pause and resume: PLAYING → PAUSED → PLAYING gives a stream that decodes without a break (host-tested with a stub, `gst-droid-simplify.md` §E.4).
 - Whether the 100 ms detach grace keeps the last frame of a recording.
 - Gate 5.3, the head-unit path.
 - Gate 5.4's other checks (the HWC baseline, recorder restart, `FRAME_REQUESTED` during the pause): `tools/b2-spike/README.md`.

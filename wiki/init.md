@@ -14,6 +14,8 @@ The next goal, Android Auto compatible resolutions (Option A mirror/letterbox fo
 
 After gate-5-exec.md, gate-5-tweaks.md prepares the `master..hwenc` diff for review: comment cleanup, reuse of existing types, and a smaller diff. gate-5-tweaks-exec.md is its execution log, with the deviations from that plan and the host test results. Build notes for PlatformSDK, HADK and the host are in building.md.
 
+gst-droid-simplify.md is the next review preparation, for gst-droid only: `droidscreencapsrc` with less state and code, one SPS/PPS mechanism and a fix for pause. It holds the plan, the execution notes and the host results.
+
 portal-discussion.md is a discussion for after B2: an XDG ScreenCast/RemoteDesktop portal backend on the `sailfish.screencap` sessions.
 
 android-screen-encoders.md is background: how Android's Stagefright recorder, `screenrecord` and the Miracast source encode the screen, compared with `droidscreencapsrc`. The ideas it leads to are in improvement-ideas.md.

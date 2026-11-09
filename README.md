@@ -94,7 +94,7 @@ Three submodules carry the change, each on branch `hwenc`:
         |                             |--- sessionChanged ---->|  no session: repaint, detach,
         |  100 ms detach grace        |                        |  destroy the EGL surface
         |  signalEndOfInputStream                              |
-        |  drain to the codec's EOS -> signal_eos -> GST_FLOW_EOS
+        |  drain to the codec's EOS -> finish returns -> GST_FLOW_EOS
         |  stop codec                                          |
 ```
 
@@ -168,10 +168,12 @@ transpose still fill the frame exactly. The code is `captureFit()` in
 - **Key units:** an upstream `GstForceKeyUnit` event, from downstream or sent
   to the element, makes the next frame an IDR and has lipstick render it, so
   it comes within a frame even on an idle screen.
-- **Overload:** a bound of 30 frames or 8 MiB. When it's exceeded, queued
-  access units are dropped up to the next IDR, with one warning per episode,
-  and an IDR is requested at once. A repeated PTS is dropped; a regressing
-  PTS is an error.
+- **Overload:** a bound of 30 frames. When it's exceeded, queued access
+  units are dropped up to the next IDR, with one warning per episode, and an
+  IDR is requested at once. A repeated PTS is dropped; a regressing PTS is an
+  error.
+- **Pause:** in PAUSED the encoder keeps running and the queue follows the
+  overload rule, so the stream stays decodable across the resume.
 - **Rank:** `GST_RANK_NONE`. The element is only used when named.
 
 ## Configuration
@@ -319,9 +321,12 @@ The commands for VLC and MPEG-TS receivers are in
   build with the review tweaks (results in `wiki/gate-5-tweaks-exec.md` §6).
   It includes the regression set, a stale `minisfservice` and Gallery
   playback;
+- the simplified `droidscreencapsrc`
+  ([`wiki/gst-droid-simplify.md`](wiki/gst-droid-simplify.md)): checklist
+  steps 3, 4, 7–11 and 14 on its build;
 - outside the checklist so far: a check that the 100 ms detach grace keeps
-  the last frame of a recording, the RTP proof, and slow downstream with
-  keyframe recovery.
+  the last frame of a recording, the RTP proof, slow downstream with
+  keyframe recovery, and pause and resume.
 
 **Known limits:**
 - An idle screen produces no frames until something changes or a key unit
@@ -354,6 +359,7 @@ The commands for VLC and MPEG-TS receivers are in
 | Cleanup | `cleanup-plan.md`: `hwenc` as reviewable commits; the pre-cleanup heads are tagged `hwenc-gate4`, with the rollback steps |
 | Next goal | `auto-goal1.md`: Android Auto resolutions (Option A mirror, Option B2 car compositor; its file and line references point at `hwenc-gate4`); its first step `gate-5.md`, executed in `gate-5-exec.md` |
 | Review prep | `gate-5-tweaks.md`: comment cleanup, reuse of existing types, a smaller `master..hwenc` diff; executed in `gate-5-tweaks-exec.md` |
+| Simplification | `gst-droid-simplify.md`: `droidscreencapsrc` with less state and code, one SPS/PPS mechanism and the pause fix; the plan, the execution notes and the host results |
 | Build | `building.md`: SDK, HADK, device install and host-only checks |
 | Device tests | `checklist.md`: the device run after every deploy; a change to device behaviour updates it |
 | Notes | `review.md` (code walkthrough), `improvement-ideas.md` (unplanned ideas), `lipstick-recorder-comparison.md` (lipstick2vnc's recorder compared with the QPA capture), `portal-discussion.md` (XDG ScreenCast portal backend, after B2), `android-screen-encoders.md` (how Stagefright, `screenrecord` and Miracast encode the screen) |
