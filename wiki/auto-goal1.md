@@ -266,3 +266,4 @@ Not added, so nothing to remove later: a `requestFrame` in `start()` (`gate-5.md
 2. Is portrait-HU support (720x1280 etc.) required in v1?
 3. Which first car app(s) to target in B.5? A dedicated Qt Quick app lowers B.5 risk considerably compared to an existing Silica app.
 4. Car mode in upstream qt-runner, or a fork?
+5. One session per target (one `DISPLAY` and one `VIRTUAL` at a time) instead of one session in total (§2.3): decided for the B2 contract in `portal-discussion.md` §8, so that a portal capture of the phone screen can run beside an AA session.

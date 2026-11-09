@@ -73,3 +73,88 @@ the code and the device risk.
 **Unchanged.** Nothing fences the capture's GPU read of the display buffer
 against lipstick reusing that buffer a frame or two later. It relies on the
 buffer rotation (3 buffers) and on the GPU running work in submission order.
+
+## Repeat the last frame on an idle screen
+
+**Status:** idea (2026-11-09). Not implemented, not measured.
+
+**Today.** Lipstick sends a frame only when the screen changes, so an idle
+screen produces no frames and the PTS keep the gap (README, "Known limits").
+An IDR on an idle screen needs `requestFrame`, which makes lipstick render
+one.
+
+**Idea.** An optional element property, for example `repeat-after-ms`
+(default 0, off), that sets `repeat-previous-frame-after` (an int64 in µs,
+`KEY_REPEAT_PREVIOUS_FRAME_AFTER`) in `DroidMediaScreenCapture::configure()`.
+The encoder's input surface does the rest: `CCodec` turns the key into a
+minimum fps (`CCodec.cpp:983`), and `GraphicBufferSource` re-submits the
+last buffer at that interval, at most 10 times (`kRepeatLastFrameCount`)
+after each new frame (`repeatLatestBuffer_l()` in
+`frameworks/av/media/module/bqhelper/GraphicBufferSource.cpp`). Miracast gets
+a steady rate the same way with its own `RepeaterSource`; see
+[`android-screen-encoders.md`](android-screen-encoders.md).
+
+**What it changes.**
+- A receiver that expects a steady rate (Android Auto, an RTP player) gets
+  frames for a while after the screen goes idle, and the encoder refines a
+  static picture instead of leaving the last change's artifacts.
+- The idle gaps in the PTS fill up, which changes the output contract
+  ("idle periods as gaps"), so the default stays off.
+- After 10 repeats the stream is idle again, so `requestFrame` stays for an
+  IDR on a long-idle screen.
+- Bitrate rises while the screen is idle, by up to 10 frames per change.
+
+**Plumbing.** `configure()` runs inside `droid_media_screen_capture_new()`,
+before any setter, so the value has to come with the meta or `configure()`
+has to move into `start()`. `DroidMediaCodecEncoderMetaData` is shared with
+gst-droid's encoders; a setter next to `droid_media_screen_capture_set_target()`, with
+`configure()` moved into `start()`, keeps that struct unchanged.
+
+**Measure first.** What the Android Auto head unit and the RTP receiver do
+with idle gaps. If they cope, this isn't needed.
+
+**Risks.** The hardware encoder's input surface must honour the key. Check
+on the device that an idle screen yields 10 extra access units per change.
+
+## `MediaCodecSource` with `FLAG_USE_SURFACE_INPUT`
+
+**Status:** considered (2026-11-09), not adopted. Recorded so it isn't
+proposed again without these points. The background is in
+[`android-screen-encoders.md`](android-screen-encoders.md).
+
+**Idea.** `StagefrightRecorder` encodes a Surface through `MediaCodecSource`
+with `FLAG_USE_SURFACE_INPUT`
+(`frameworks/av/media/libstagefright/MediaCodecSource.cpp`). It would replace
+`DroidMediaScreenCapture`'s `configure()`, `run()`, the wait in `finish()`
+and the `request-sync` call with `initEncoder()`, async output with
+`read()`, `stop()` and `requestIDRFrame()`.
+
+**Why not.**
+- **Lost output at end of stream.** `signalEOS()` releases every output
+  buffer the reader hasn't taken yet (`MediaCodecSource.cpp:655`), and
+  `read()` reports the end at once. `run()` hands every access unit to the
+  callback before the EOS flag; `droidscreencapsrc` relies on that.
+- **Stop on an idle screen.** The recorder's stop sets `stop-time-us`. With a
+  stop time set, the input surface sends end of stream only when a frame at
+  or after it arrives (`GraphicBufferSource.cpp:1438`). After the detach no
+  frame comes, so the stall timer fires after up to 1 s
+  (`kMaxStopTimeOffsetUs`) and the encoder is released without a drain.
+  Without a stop time it behaves like `finish()`, and `DETACH_GRACE_MS` is
+  still needed.
+- **Codec choice.** Only `FLAG_PREFER_SOFTWARE_CODEC`; no hardware-only
+  selection.
+- **Errors.** `CB_ERROR` becomes end of stream; the separate `error`
+  callback is lost.
+- **No reuse in droidmedia.** On Android 7 and later droidmedia encodes
+  through `AsyncCodecSource`, which has no Surface input and reaches
+  `MediaCodecSource` only for camera `video/raw`
+  (`droidmedia/AsyncCodecSource.cpp:130`). The `DroidMediaCodec` loop starts
+  in `droid_media_codec_queue()` (`droidmediacodec.cpp:977`), and
+  `droid_media_codec_drain()` drains the input `Source`. Reusing it would
+  grow the droidmedia diff.
+- It solves none of the session work: the producer handoff, generations,
+  `requestFrame`, the detach.
+
+**Usable without it.** Suspend (`drop-input-frames`, for example on screen
+lock) and frame repeat (above) are plain `MediaCodec` parameters.
+`screenrecord` also uses plain `MediaCodec` with its own output loop.

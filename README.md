@@ -356,4 +356,4 @@ The commands for VLC and MPEG-TS receivers are in
 | Review prep | `gate-5-tweaks.md`: comment cleanup, reuse of existing types, a smaller `master..hwenc` diff; executed in `gate-5-tweaks-exec.md` |
 | Build | `building.md`: SDK, HADK, device install and host-only checks |
 | Device tests | `checklist.md`: the device run after every deploy; a change to device behaviour updates it |
-| Notes | `review.md` (code walkthrough), `improvement-ideas.md` (unplanned ideas), `lipstick-recorder-comparison.md` (lipstick2vnc's recorder compared with the QPA capture) |
+| Notes | `review.md` (code walkthrough), `improvement-ideas.md` (unplanned ideas), `lipstick-recorder-comparison.md` (lipstick2vnc's recorder compared with the QPA capture), `portal-discussion.md` (XDG ScreenCast portal backend, after B2), `android-screen-encoders.md` (how Stagefright, `screenrecord` and Miracast encode the screen) |
