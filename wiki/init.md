@@ -6,7 +6,7 @@ Building is done manually with me entering PlatformSDK or Android croot respetiv
 
 All commits in this repository and in all submodules are done by me.
 
-Code comments describe the current state, not the timeline that led to it: reviewers read the squashed `master..hwenc` diff and never see the intermediate versions (e.g. no "no Binder call" or "instead of polling" once polling is gone). History goes in the wiki logs and commit messages.
+Code comments describe the current state, not the timeline that led to it: reviewers read `master..hwenc-review`, the published squashed commit plus one follow-up commit per review round, and never see the intermediate `hwenc` versions (e.g. no "no Binder call" or "instead of polling" once polling is gone). The deltas between rounds belong in the review-commit messages, the rest of the history in the wiki logs.
 
 The last document now is cleanup-plan.md: the cleanup of the `hwenc` branches into reviewable commits (pre-cleanup heads tagged `hwenc-gate4`), with the notes of that session, including the stale-last-frame fixes and the open items. Before it, hwc-h264-encoding-revision4.md was the plan and hwc-h264-exec4.md its execution log. The overview of the current state is ../README.md.
 
@@ -15,6 +15,10 @@ The next goal, Android Auto compatible resolutions (Option A mirror/letterbox fo
 After gate-5-exec.md, gate-5-tweaks.md prepares the `master..hwenc` diff for review: comment cleanup, reuse of existing types, and a smaller diff. gate-5-tweaks-exec.md is its execution log, with the deviations from that plan and the host test results. Build notes for PlatformSDK, HADK and the host are in building.md.
 
 gst-droid-simplify.md is the next review preparation, for gst-droid only: `droidscreencapsrc` with less state and code, one SPS/PPS mechanism and a fix for pause. It holds the plan, the execution notes and the host results.
+
+droidmedia-review.md is the same for droidmedia: a `finish()`/`destroy()` race, the test tool out of the RPM, one target enum and one generation in the service, and the libminisf window handle (with its plugin and B2 spike edits). It holds the plan, the execution notes and the host results.
+
+qpa-review.md is the same for qt5-qpa-hwcomposer-plugin: the upstream files become additions only (a `HWC2Window` setter in place of a constructor parameter), one wait limit, no `ScopedFd`, and clearer comments. It holds the plan, the execution notes and the host results.
 
 portal-discussion.md is a discussion for after B2: an XDG ScreenCast/RemoteDesktop portal backend on the `sailfish.screencap` sessions.
 

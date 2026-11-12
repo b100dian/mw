@@ -1,65 +1,107 @@
 #!/usr/bin/env bash
 #
-# squash-hwenc-review.sh
+# squash-hwenc-review.sh [options] [repo[:rev] ...]
 #
-# Squashes the full diff of the hwenc branch into a single review commit
-# on branch 'hwenc-review' for each of the three submodules:
-#   - mw/droidmedia
-#   - mw/gst-droid
-#   - mw/qt5-qpa-hwcomposer-plugin
+# Publishes the work on branch 'hwenc' of the submodules droidmedia, gst-droid and
+# qt5-qpa-hwcomposer-plugin on their branch 'hwenc-review'.
 #
-# Preserves the full history of the hwenc branches untouched.
-# Idempotent: can be executed repeatedly as hwenc evolves.
-# Also updates the mw superproject's hwenc-review branch with the new tips.
+# Default: everything new on hwenc (or <rev>) since the last sync becomes one commit on top of
+# hwenc-review, so the published branch only ever fast-forwards and is pushed without force.
+# --squash: rebuild hwenc-review as one commit on master (rewrites published history).
 #
-# Safety features:
-# 1. Working tree cleanliness pre-flight check (prevents silent omission of uncommitted work).
-# 2. Safe synchronization if 'hwenc-review' is currently checked out.
-# 3. Automatic timestamped backups of existing 'hwenc-review' branches before overwriting.
-# 4. Detection of un-backported review commits.
-# 5. Safe push instructions using --force-with-lease.
+# The hwenc history is never touched. Nothing is pushed.
 #
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MW_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MW_DIR="${MW_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
 SUBMODULES=("droidmedia" "gst-droid" "qt5-qpa-hwcomposer-plugin")
-UPDATE_MW=true
+DEFAULT_REV="refs/heads/hwenc"
+REVIEW_REF="refs/heads/hwenc-review"
+REMOTE="b100dian"
+
 ALLOW_DIRTY=false
+DRY_RUN=false
+SQUASH=false
+MSG=""
+SELECTED=()
+REVS=()
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [options]
+Usage: $(basename "$0") [options] [repo[:rev] ...]
 
-Options:
-  --allow-dirty  Allow squashing even if tracked files have uncommitted modifications
-  --no-mw        Skip creating/updating hwenc-review branch in the mw superproject
-  -h, --help     Show this help message
+  (no repos)        all three submodules, rev = hwenc
+  repo[:rev]        only this submodule, optionally up to <rev> (e.g. gst-droid:hwenc~1)
+  -m MSG | -F FILE  message for every selected repo (skips the editor)
+  -n, --dry-run     show the pending hwenc commits and diffstat per repo; change nothing
+  --squash          rebuild hwenc-review as one commit on master (rewrites published history)
+  --allow-dirty     proceed although tracked files have uncommitted modifications
+  -h, --help        show this help message
+
+Repos: ${SUBMODULES[*]}
 EOF
-  exit 0
+  exit "${1:-0}"
+}
+
+die() {
+  echo "$*" >&2
+  exit 1
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -m)
+      [[ $# -ge 2 ]] || die "-m needs a message"
+      MSG="$2"
+      shift 2
+      ;;
+    -F)
+      [[ $# -ge 2 ]] || die "-F needs a file"
+      MSG="$(cat "$2")"
+      shift 2
+      ;;
+    -n|--dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --squash)
+      SQUASH=true
+      shift
+      ;;
     --allow-dirty)
       ALLOW_DIRTY=true
       shift
       ;;
-    --no-mw)
-      UPDATE_MW=false
-      shift
-      ;;
     -h|--help)
-      usage
+      usage 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage 1 >&2
       ;;
     *)
-      echo "Unknown option: $1" >&2
-      usage
+      name="${1%%:*}"
+      rev="${DEFAULT_REV}"
+      [[ "$1" == *:* ]] && rev="${1#*:}"
+      known=false
+      for sub in "${SUBMODULES[@]}"; do
+        [[ "${sub}" == "${name}" ]] && known=true
+      done
+      "${known}" || die "Unknown repo: ${name} (expected one of: ${SUBMODULES[*]})"
+      SELECTED+=("${name}")
+      REVS+=("${rev}")
+      shift
       ;;
   esac
 done
+
+if [[ ${#SELECTED[@]} -eq 0 ]]; then
+  SELECTED=("${SUBMODULES[@]}")
+  for _ in "${SUBMODULES[@]}"; do REVS+=("${DEFAULT_REV}"); done
+fi
 
 # ==============================================================================
 # Pre-flight Check: Detect Tracked Uncommitted Changes
@@ -82,13 +124,13 @@ check_cleanliness() {
       echo "=================================================="
       echo "${dirty_files}" | sed 's/^/  /'
       echo ""
-      echo "These uncommitted changes would be SILENTLY EXCLUDED from the squashed review commit"
+      echo "These uncommitted changes would be SILENTLY EXCLUDED from the review commit"
       echo "because 'hwenc-review' only includes commits committed to branch 'hwenc'."
       echo ""
       echo "To resolve this:"
       echo "  1. Commit your changes to 'hwenc' first, OR"
       echo "  2. Stash your changes with: git -C \"${repo_path}\" stash, OR"
-      echo "  3. Re-run with '--allow-dirty' if you intentionally want to squash only committed history."
+      echo "  3. Re-run with '--allow-dirty' if you intentionally want only committed history."
       echo ""
       return 1
     fi
@@ -96,25 +138,26 @@ check_cleanliness() {
   return 0
 }
 
-echo "=================================================="
-echo "Pre-flight cleanliness check..."
-echo "=================================================="
-for sub in "${SUBMODULES[@]}"; do
-  if ! check_cleanliness "${sub}" "${MW_DIR}/${sub}"; then
-    exit 1
-  fi
-done
+# Merge-base of <rev> with master, origin/master or github/master.
+find_base() {
+  local repo_path="$1"
+  local rev="$2"
+  local candidate base
 
-if [[ "${UPDATE_MW}" == "true" ]]; then
-  if ! check_cleanliness "mw (superproject)" "${MW_DIR}"; then
-    exit 1
-  fi
-fi
-echo "Pre-flight checks passed."
-echo ""
+  for candidate in master origin/master github/master remotes/origin/master remotes/github/master; do
+    if git -C "${repo_path}" rev-parse --verify --quiet "${candidate}" >/dev/null; then
+      base="$(git -C "${repo_path}" merge-base "${rev}" "${candidate}" 2>/dev/null || true)"
+      if [[ -n "${base}" ]]; then
+        echo "${base}"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
 
 # ==============================================================================
-# Curated Commit Messages
+# Curated Commit Messages (--squash)
 # ==============================================================================
 get_curated_msg() {
   local repo_name="$1"
@@ -136,7 +179,8 @@ Implement hardware-accelerated H.264 screen capture via MediaCodec surface input
 - Add droid_media_screen_capture_request_sync_frame(): the next frame is an IDR,
   and the renderer is asked for it, also on an idle screen.
 - Export droid_media_screen_capture_* through hybris.c.
-- Include screencap_surface_capture_test standalone test utility.
+- Add the screencap_surface_capture_test tool, an optional module that the
+  RPM doesn't package.
 MSG
       ;;
     gst-droid)
@@ -174,7 +218,7 @@ MSG
 }
 
 # ==============================================================================
-# Helper: Update hwenc-review branch safely (no desynchronization or clobbering)
+# Helper: Rebuild hwenc-review safely (--squash; backs up the old tip)
 # ==============================================================================
 safely_update_review_branch() {
   local repo_name="$1"
@@ -186,9 +230,9 @@ safely_update_review_branch() {
   ts="$(date +%Y%m%d-%H%M%S)"
 
   # 1. If hwenc-review already exists, backup and detect any un-backported commits
-  if git -C "${repo_path}" rev-parse --verify --quiet refs/heads/hwenc-review >/dev/null; then
+  if git -C "${repo_path}" rev-parse --verify --quiet "${REVIEW_REF}" >/dev/null; then
     local old_review_tip
-    old_review_tip="$(git -C "${repo_path}" rev-parse refs/heads/hwenc-review)"
+    old_review_tip="$(git -C "${repo_path}" rev-parse "${REVIEW_REF}")"
 
     # Save timestamped backup ref
     git -C "${repo_path}" update-ref "refs/backup/hwenc-review-${ts}" "${old_review_tip}"
@@ -206,7 +250,7 @@ safely_update_review_branch() {
   local current_head
   current_head="$(git -C "${repo_path}" symbolic-ref --quiet HEAD 2>/dev/null || true)"
 
-  if [[ "${current_head}" == "refs/heads/hwenc-review" ]]; then
+  if [[ "${current_head}" == "${REVIEW_REF}" ]]; then
     # hwenc-review is actively checked out: update ref AND index/working-tree cleanly
     local dirty_check
     dirty_check="$(git -C "${repo_path}" status --porcelain -uno)"
@@ -219,52 +263,168 @@ safely_update_review_branch() {
     echo "  Synchronized checked-out working tree and index on hwenc-review."
   else
     # Any other branch is checked out (e.g. hwenc): update ref pointer only, leaves worktree untouched
-    git -C "${repo_path}" update-ref refs/heads/hwenc-review "${new_commit}"
+    git -C "${repo_path}" update-ref "${REVIEW_REF}" "${new_commit}"
   fi
 }
 
 # ==============================================================================
-# Process Submodules
+# Append: one new commit on top of hwenc-review
 # ==============================================================================
-declare -A review_tips
-review_count=0
+append_review_commit() {
+  local name="$1"
+  local rev="$2"
+  local path="${MW_DIR}/${name}"
 
-for sub in "${SUBMODULES[@]}"; do
-  sub_path="${MW_DIR}/${sub}"
+  local src review
+  src="$(git -C "${path}" rev-parse --verify --quiet "${rev}^{commit}")" || {
+    echo "  [ERROR] '${rev}' not found in ${name}. Skipping." >&2
+    return 1
+  }
+  review="$(git -C "${path}" rev-parse --verify --quiet "${REVIEW_REF}^{commit}")" || {
+    echo "  [ERROR] Branch 'hwenc-review' not found in ${name}. Create it with --squash. Skipping." >&2
+    return 1
+  }
 
-  echo "=================================================="
-  echo "Squashing submodule: ${sub}"
-  echo "=================================================="
-
-  if ! git -C "${sub_path}" rev-parse --verify --quiet refs/heads/hwenc >/dev/null; then
-    echo "  [ERROR] Branch 'hwenc' not found in ${sub}. Skipping." >&2
-    continue
+  # A different base means hwenc was rebased: its tree would carry upstream changes.
+  local src_base review_base
+  src_base="$(find_base "${path}" "${src}")" || {
+    echo "  [ERROR] Could not determine merge-base with master in ${name}." >&2
+    return 1
+  }
+  review_base="$(find_base "${path}" "${review}")" || {
+    echo "  [ERROR] Could not determine merge-base of hwenc-review with master in ${name}." >&2
+    return 1
+  }
+  if [[ "${src_base}" != "${review_base}" ]]; then
+    echo "  [ERROR] ${rev} and hwenc-review have different merge-bases with master in ${name}:" >&2
+    echo "    ${rev}:        ${src_base}" >&2
+    echo "    hwenc-review: ${review_base}" >&2
+    echo "  A commit with the tree of ${rev} would mix upstream changes into the review." >&2
+    echo "  Rebase hwenc-review onto the new master by hand, or rebuild it with --squash" >&2
+    echo "  (rewrites published history). Skipping." >&2
+    return 1
   fi
 
-  # Find base against master, origin/master, or github/master
-  base=""
-  for candidate in master origin/master github/master remotes/origin/master remotes/github/master; do
-    if git -C "${sub_path}" rev-parse --verify --quiet "${candidate}" >/dev/null; then
-      base="$(git -C "${sub_path}" merge-base refs/heads/hwenc "${candidate}" 2>/dev/null || true)"
-      if [[ -n "${base}" ]]; then
-        break
+  local src_tree review_tree
+  src_tree="$(git -C "${path}" rev-parse "${src}^{tree}")"
+  review_tree="$(git -C "${path}" rev-parse "${review}^{tree}")"
+  if [[ "${src_tree}" == "${review_tree}" ]]; then
+    echo "  hwenc-review is up to date with ${rev}."
+    echo ""
+    return 0
+  fi
+
+  # Newest hwenc commit whose tree is what hwenc-review already holds.
+  local sync pending=""
+  sync="$(git -C "${path}" log --format='%H %T' "${src_base}..${src}" |
+    awk -v t="${review_tree}" '$2 == t && !f { print $1; f = 1 }')"
+  if [[ -n "${sync}" ]]; then
+    pending="$(git -C "${path}" log --oneline --reverse "${sync}..${src}")"
+    echo "  Last sync:     ${sync}"
+    echo "  New commits on ${rev}:"
+    echo "${pending}" | sed 's/^/    /'
+  else
+    echo "  [WARNING] No commit of ${rev} has the tree of hwenc-review. It was edited directly or"
+    echo "  hwenc was rewritten: the new commit sets the tree to ${rev} and undoes anything"
+    echo "  that exists only on hwenc-review."
+  fi
+  echo ""
+  git -C "${path}" diff --stat "${review}" "${src}" | sed 's/^/  /'
+  echo ""
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    return 0
+  fi
+
+  local msg="${MSG}"
+  if [[ -z "${msg}" ]]; then
+    local editor msgfile
+    editor="$(git -C "${path}" var GIT_EDITOR)"
+    msgfile="$(git -C "${path}" rev-parse --absolute-git-dir)/HWENC_REVIEW_EDITMSG"
+    {
+      echo ""
+      echo "# Review commit for ${name}: tree of ${rev} on top of hwenc-review."
+      echo "# Lines starting with '#' are removed; an empty message skips this repo."
+      if [[ -n "${pending}" ]]; then
+        echo "#"
+        echo "# New commits:"
+        echo "${pending}" | sed 's/^/#   /'
       fi
+      echo "#"
+      echo "# Changes against hwenc-review:"
+      git -C "${path}" diff --stat "${review}" "${src}" | sed 's/^/#   /'
+    } > "${msgfile}"
+    bash -c "${editor} \"\$1\"" _ "${msgfile}" || {
+      echo "  [ERROR] Editor failed. Skipping ${name}." >&2
+      return 1
+    }
+    msg="$(git stripspace --strip-comments < "${msgfile}")"
+    rm -f "${msgfile}"
+    if [[ -z "${msg}" ]]; then
+      echo "  Empty commit message. Skipping ${name}."
+      echo ""
+      return 0
     fi
-  done
-
-  if [[ -z "${base}" ]]; then
-    echo "  [ERROR] Could not determine merge-base with master in ${sub}." >&2
-    continue
   fi
 
-  tree="$(git -C "${sub_path}" rev-parse refs/heads/hwenc^{tree})"
-  hwenc_tip="$(git -C "${sub_path}" rev-parse refs/heads/hwenc)"
+  local new_commit
+  new_commit="$(git -C "${path}" commit-tree "${src_tree}" -p "${review}" <<< "${msg}")"
 
-  an="$(git -C "${sub_path}" log -1 --format="%an" "${hwenc_tip}")"
-  ae="$(git -C "${sub_path}" log -1 --format="%ae" "${hwenc_tip}")"
-  ad="$(git -C "${sub_path}" log -1 --format="%ad" --date=raw "${hwenc_tip}")"
+  local current_head
+  current_head="$(git -C "${path}" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+  if [[ "${current_head}" == "${REVIEW_REF}" ]]; then
+    if [[ -n "$(git -C "${path}" status --porcelain -uno)" ]]; then
+      echo "  [ERROR] Cannot update hwenc-review while it is checked out with uncommitted changes in ${name}." >&2
+      echo "  Please commit, stash, or checkout hwenc before running." >&2
+      return 1
+    fi
+    git -C "${path}" update-ref "${REVIEW_REF}" "${new_commit}" "${review}"
+    git -C "${path}" reset --hard "${new_commit}" >/dev/null
+    echo "  Synchronized checked-out working tree and index on hwenc-review."
+  else
+    git -C "${path}" update-ref "${REVIEW_REF}" "${new_commit}" "${review}"
+  fi
 
-  commit_msg="$(get_curated_msg "${sub}")"
+  echo "  hwenc-review:  ${new_commit} (parent ${review})"
+  echo ""
+  UPDATED+=("${name}")
+}
+
+# ==============================================================================
+# Squash: rebuild hwenc-review as one commit on master
+# ==============================================================================
+squash_review_branch() {
+  local name="$1"
+  local rev="$2"
+  local path="${MW_DIR}/${name}"
+
+  local src
+  src="$(git -C "${path}" rev-parse --verify --quiet "${rev}^{commit}")" || {
+    echo "  [ERROR] '${rev}' not found in ${name}. Skipping." >&2
+    return 1
+  }
+
+  local base
+  base="$(find_base "${path}" "${src}")" || {
+    echo "  [ERROR] Could not determine merge-base with master in ${name}." >&2
+    return 1
+  }
+
+  echo "  [WARNING] --squash rewrites the published hwenc-review of ${name}."
+  echo "  Base:          ${base}"
+  echo "  ${rev}:  ${src}"
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    echo ""
+    return 0
+  fi
+
+  local tree an ae ad commit_msg review_commit
+  tree="$(git -C "${path}" rev-parse "${src}^{tree}")"
+  an="$(git -C "${path}" log -1 --format="%an" "${src}")"
+  ae="$(git -C "${path}" log -1 --format="%ae" "${src}")"
+  ad="$(git -C "${path}" log -1 --format="%ad" --date=raw "${src}")"
+
+  commit_msg="${MSG:-$(get_curated_msg "${name}")}"
 
   review_commit="$(
     GIT_AUTHOR_NAME="${an}" \
@@ -273,93 +433,63 @@ for sub in "${SUBMODULES[@]}"; do
     GIT_COMMITTER_NAME="${an}" \
     GIT_COMMITTER_EMAIL="${ae}" \
     GIT_COMMITTER_DATE="${ad}" \
-    git -C "${sub_path}" commit-tree "${tree}" -p "${base}" <<< "${commit_msg}"
+    git -C "${path}" commit-tree "${tree}" -p "${base}" <<< "${commit_msg}"
   )"
 
-  # Safely update hwenc-review
-  safely_update_review_branch "${sub}" "${sub_path}" "${review_commit}" "${base}"
+  safely_update_review_branch "${name}" "${path}" "${review_commit}" "${base}" || return 1
 
-  review_tips["${sub}"]="${review_commit}"
-  review_count=$((review_count + 1))
-
-  echo "  Base:          ${base}"
-  echo "  hwenc tip:     ${hwenc_tip}"
   echo "  hwenc-review:  ${review_commit} (single commit on top of base)"
   echo ""
-done
+  UPDATED+=("${name}")
+}
 
 # ==============================================================================
-# Update mw superproject if enabled
+# Main
 # ==============================================================================
-if [[ "${UPDATE_MW}" == "true" && ${review_count} -eq 3 ]]; then
+if [[ "${DRY_RUN}" == "false" ]]; then
   echo "=================================================="
-  echo "Updating mw superproject: hwenc-review branch"
+  echo "Pre-flight cleanliness check..."
   echo "=================================================="
-
-  mw_base_ref="refs/heads/hwenc"
-  if ! git -C "${MW_DIR}" rev-parse --verify --quiet "${mw_base_ref}" >/dev/null; then
-    mw_base_ref="HEAD"
-  fi
-  mw_base_sha="$(git -C "${MW_DIR}" rev-parse "${mw_base_ref}")"
-
-  # Build new tree in mw updating the submodule gitlink entries
-  new_mw_tree="$(git -C "${MW_DIR}" ls-tree "${mw_base_sha}" | awk -F'\t' \
-    -v dm="${review_tips[droidmedia]}" \
-    -v gst="${review_tips[gst-droid]}" \
-    -v qt="${review_tips[qt5-qpa-hwcomposer-plugin]}" '
-    {
-      split($1, meta, " ");
-      mode = meta[1];
-      type = meta[2];
-      sha  = meta[3];
-      path = $2;
-
-      if (path == "droidmedia") sha = dm;
-      else if (path == "gst-droid") sha = gst;
-      else if (path == "qt5-qpa-hwcomposer-plugin") sha = qt;
-
-      print mode " " type " " sha "\t" path;
-    }
-  ' | git -C "${MW_DIR}" mktree)"
-
-  mw_an="$(git -C "${MW_DIR}" log -1 --format="%an" "${mw_base_sha}")"
-  mw_ae="$(git -C "${MW_DIR}" log -1 --format="%ae" "${mw_base_sha}")"
-  mw_ad="$(git -C "${MW_DIR}" log -1 --format="%ad" --date=raw "${mw_base_sha}")"
-
-  mw_review_msg="$(cat <<MSG
-Review: Update submodules to hwenc-review single-commit tips
-
-Updates submodule gitlinks for:
-- droidmedia: ${review_tips[droidmedia]}
-- gst-droid: ${review_tips[gst-droid]}
-- qt5-qpa-hwcomposer-plugin: ${review_tips[qt5-qpa-hwcomposer-plugin]}
-MSG
-)"
-
-  mw_review_commit="$(
-    GIT_AUTHOR_NAME="${mw_an}" \
-    GIT_AUTHOR_EMAIL="${mw_ae}" \
-    GIT_AUTHOR_DATE="${mw_ad}" \
-    GIT_COMMITTER_NAME="${mw_an}" \
-    GIT_COMMITTER_EMAIL="${mw_ae}" \
-    GIT_COMMITTER_DATE="${mw_ad}" \
-    git -C "${MW_DIR}" commit-tree "${new_mw_tree}" -p "${mw_base_sha}" <<< "${mw_review_msg}"
-  )"
-
-  mw_base_upstream="master"
-  safely_update_review_branch "mw" "${MW_DIR}" "${mw_review_commit}" "${mw_base_upstream}"
-  echo "  mw hwenc-review branch updated -> ${mw_review_commit}"
+  for name in "${SELECTED[@]}"; do
+    check_cleanliness "${name}" "${MW_DIR}/${name}" || exit 1
+  done
+  echo "Pre-flight checks passed."
   echo ""
 fi
 
-echo "=================================================="
-echo "Review branches ready!"
-echo "To push the review branches safely to your remote forks:"
-echo "  git -C droidmedia push --force-with-lease b100dian hwenc-review"
-echo "  git -C gst-droid push --force-with-lease b100dian hwenc-review"
-echo "  git -C qt5-qpa-hwcomposer-plugin push --force-with-lease b100dian hwenc-review"
-echo "  git push --force-with-lease b100dian hwenc-review"
-echo ""
-echo "Note: Using --force-with-lease ensures you never inadvertently"
-echo "overwrite changes pushed by collaborators or remote review comments."
-echo "=================================================="
+UPDATED=()
+failed=0
+
+for i in "${!SELECTED[@]}"; do
+  name="${SELECTED[$i]}"
+  rev="${REVS[$i]}"
+
+  echo "=================================================="
+  if [[ "${SQUASH}" == "true" ]]; then
+    echo "Squashing submodule: ${name}"
+  else
+    echo "Appending to hwenc-review: ${name}"
+  fi
+  echo "=================================================="
+
+  if [[ "${SQUASH}" == "true" ]]; then
+    squash_review_branch "${name}" "${rev}" || failed=1
+  else
+    append_review_commit "${name}" "${rev}" || failed=1
+  fi
+done
+
+if [[ ${#UPDATED[@]} -gt 0 ]]; then
+  echo "=================================================="
+  echo "Review branches ready! Push to your remote forks:"
+  for name in "${UPDATED[@]}"; do
+    if [[ "${SQUASH}" == "true" ]]; then
+      echo "  git -C ${name} push --force-with-lease ${REMOTE} hwenc-review"
+    else
+      echo "  git -C ${name} push ${REMOTE} hwenc-review"
+    fi
+  done
+  echo "=================================================="
+fi
+
+exit "${failed}"

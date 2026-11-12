@@ -23,8 +23,9 @@ Three submodules carry the change, each on branch `hwenc`:
 | `qt5-qpa-hwcomposer-plugin` | draws the display into the encoder Surface | `mer-hybris/qt5-qpa-hwcomposer-plugin` (`master`) |
 
 - The change is `git diff master..hwenc` in each submodule.
-  [`scripts/squash-hwenc-review.sh`](scripts/squash-hwenc-review.sh) squashes
-  it into one commit per repository on branch `hwenc-review`.
+  [`scripts/squash-hwenc-review.sh`](scripts/squash-hwenc-review.sh) adds the
+  new `hwenc` work as one commit on top of the published `hwenc-review` branch
+  of each repository (`--squash` rebuilds it as one commit on `master`).
 - The forks live at `github.com/b100dian/<repo>`.
 - The `libhybris` submodule is not part of the set: stock libhybris works.
 
@@ -224,8 +225,9 @@ struct the plugin reads changed together.
    `make libdroidmedia minimediaservice minisfservice libminisf screencap_surface_capture_test`,
    then the droidmedia RPM as usual:
    `rpm/dhd/helpers/build_packages.sh -g`. It ships
-   `libdroidmedia.so`, `libminisf.so`, `minisfservice` and
-   `screencap_surface_capture_test`.
+   `libdroidmedia.so`, `libminisf.so` and `minisfservice`. The test tool
+   `screencap_surface_capture_test` is an optional module, built by the `make`
+   line and copied by hand (step 12 of [`wiki/checklist.md`](wiki/checklist.md)).
 2. **droidmedia-devel**, which gst-droid needs (PlatformSDK):
    `rpm/dhd/helpers/build_packages.sh -b hybris/mw/droidmedia -s rpm/droidmedia-devel.spec`.
 3. **gst-droid:** `rpm/dhd/helpers/build_packages.sh -b hybris/mw/gst-droid`.
@@ -264,7 +266,7 @@ gst-launch-1.0 -e droidscreencapsrc width=1080 height=2520 target-bitrate=800000
   qtmux ! filesink location=/tmp/screen.mp4
 
 # Element log: GST_DEBUG=droidscreencapsrc:4
-# Without GStreamer (droidmedia only):
+# Without GStreamer (droidmedia only; the tool is copied by hand, see Build and deploy):
 /usr/libexec/droid-hybris/system/bin/screencap_surface_capture_test 1080 2520 8000000 30 5 /tmp/t.h264
 ```
 

@@ -11,10 +11,10 @@ display for its clients (`wiki/gate-5.md` §5.4).
 3. creates a recordable RGBA8888 GLES2 context, current with no surface;
 4. binds a `wl_display_create()` display with `eglBindWaylandDisplayWL` (no socket, no clients);
 5. waits for a session with `target == 1` (`VIRTUAL`) and ignores the others;
-6. attaches: `target_acquire_generation` → `target_native_window` → `eglCreateWindowSurface`;
+6. attaches: `window_acquire` → `eglCreateWindowSurface`;
 7. runs the script at the session's fps, on attached time: animate 5 s, pause 5 s (no swaps;
    one repaint per `FRAME_REQUESTED`, and one on an attach), animate 5 s;
-8. on a session end or change, destroys the surface, releases the target and waits for the next
+8. on a session end or change, destroys the surface, releases the window and waits for the next
    session (the script and the frame counter carry on);
 9. at exit, lists the mapped libraries whose path contains `composer` or `hwc`, then prints
    `render: PASS|FAIL` and `wayland bind: PASS|FAIL`.
@@ -92,7 +92,7 @@ EGL_PLATFORM=hwcomposer ~/b2-spike 2>&1 | grep -E 'repaint|pause|animate'; wait
 ```
 
 `[phone]` Baseline for the maps list: a process that loads libminisf's Android dependencies and
-never opens the HWC:
+never opens the HWC (the test tool, installed by `wiki/checklist.md` step 12):
 ```sh
 /usr/libexec/droid-hybris/system/bin/screencap_surface_capture_test 1280 720 4000000 30 10 /tmp/base.h264 &
 sleep 3; grep -E 'composer|hwc' /proc/$!/maps | awk '{print $6}' | sort -u; wait

@@ -9,7 +9,8 @@ Read [`wiki/init.md`](wiki/init.md) first: it describes this repository, its thr
 - Never commit, in `mw` or in any submodule: the user makes all commits.
 - Builds and device tests are manual. Don't run `sfossdk`, `sb2` or the HADK build; give the
   user the exact command for `sfossdk` or `croot`. Host-only checks are in `wiki/building.md`.
-- The change under review is `master..hwenc` per submodule, squashed into one commit each.
+- The change under review is `master..hwenc` per submodule, published as `hwenc-review`: one
+  squashed commit plus one commit per review round on top.
   Keep that diff small and the submodule trees free of build artifacts.
 - Comments describe the current code, never its history (no gate numbers, "instead of",
   "as before"). Keep them to 1–2 lines on non-obvious constraints. History goes in `wiki/`

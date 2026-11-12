@@ -75,16 +75,15 @@ static volatile sig_atomic_t s_quit;
 struct spike {
   int (*query)(struct session *info);
   void (*set_callback)(void (*callback)(void *user, int event), void *user);
-  void *(*acquire_generation)(uint64_t generation);
-  void *(*native_window)(void *target);
-  void (*release)(void *target);
+  void *(*window_acquire)(uint64_t generation);
+  void (*window_release)(void *window);
 
   EGLDisplay dpy;
   EGLConfig config;
   EGLContext ctx;
   PresentationTimeFn presentation_time;
 
-  void *target;                  /* NULL while detached */
+  void *window;                  /* NULL while detached */
   EGLSurface surface;
   struct session session;        /* the attached one */
   uint64_t ignored_generation;
@@ -178,12 +177,10 @@ static int load_minisf(struct spike *sp)
     "minisf_screen_capture_" name)
   RESOLVE(query, "session_query");
   RESOLVE(set_callback, "set_callback");
-  RESOLVE(acquire_generation, "target_acquire_generation");
-  RESOLVE(native_window, "target_native_window");
-  RESOLVE(release, "target_release");
+  RESOLVE(window_acquire, "window_acquire");
+  RESOLVE(window_release, "window_release");
 #undef RESOLVE
-  if (!sp->query || !sp->set_callback || !sp->acquire_generation || !sp->native_window ||
-      !sp->release) {
+  if (!sp->query || !sp->set_callback || !sp->window_acquire || !sp->window_release) {
     fprintf(stderr, "libminisf has no screen capture API\n");
     return 0;
   }
@@ -234,21 +231,18 @@ static int init_egl(struct spike *sp)
 
 static int64_t script_time(const struct spike *sp, int64_t now)
 {
-  return sp->script_ns + (sp->target ? now - sp->attach_ns : 0);
+  return sp->script_ns + (sp->window ? now - sp->attach_ns : 0);
 }
 
 /* Returns 0 if EGL failed on a live session. */
 static int attach(struct spike *sp, const struct session *s)
 {
-  void *target = sp->acquire_generation(s->generation);
-  void *window = target ? sp->native_window(target) : NULL;
+  void *window = sp->window_acquire(s->generation);
   EGLSurface surface;
 
   if (!window) {
-    fprintf(stderr, "session %" PRIu64 ": no target, waiting for the next one\n",
+    fprintf(stderr, "session %" PRIu64 ": no window, waiting for the next one\n",
         s->generation);
-    if (target)
-      sp->release(target);
     sp->ignored_generation = s->generation;
     return 1;
   }
@@ -256,19 +250,19 @@ static int attach(struct spike *sp, const struct session *s)
   surface = eglCreateWindowSurface(sp->dpy, sp->config, (EGLNativeWindowType)window, NULL);
   if (surface == EGL_NO_SURFACE) {
     fprintf(stderr, "eglCreateWindowSurface failed: 0x%x\n", eglGetError());
-    sp->release(target);
+    sp->window_release(window);
     return 0;
   }
   if (!eglMakeCurrent(sp->dpy, surface, surface, sp->ctx)) {
     fprintf(stderr, "eglMakeCurrent failed: 0x%x\n", eglGetError());
     eglDestroySurface(sp->dpy, surface);
-    sp->release(target);
+    sp->window_release(window);
     return 0;
   }
   if (!eglSwapInterval(sp->dpy, 0))
     fprintf(stderr, "eglSwapInterval(0) failed: 0x%x\n", eglGetError());
 
-  sp->target = target;
+  sp->window = window;
   sp->surface = surface;
   sp->session = *s;
   sp->attach_ns = monotonic_ns();
@@ -287,9 +281,9 @@ static void detach(struct spike *sp, const char *reason)
   if (!eglMakeCurrent(sp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, sp->ctx))
     eglMakeCurrent(sp->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   eglDestroySurface(sp->dpy, sp->surface);
-  sp->release(sp->target);
+  sp->window_release(sp->window);
   sp->script_ns = script_time(sp, monotonic_ns());
-  sp->target = NULL;
+  sp->window = NULL;
   sp->surface = EGL_NO_SURFACE;
   fprintf(stderr, "detached from session %" PRIu64 ": %s\n", sp->session.generation, reason);
 }
@@ -300,9 +294,9 @@ static int update_session(struct spike *sp)
   struct session s;
   const int active = sp->query(&s);
 
-  if (sp->target && (!active || s.generation != sp->session.generation))
+  if (sp->window && (!active || s.generation != sp->session.generation))
     detach(sp, active ? "replaced" : "ended");
-  if (sp->target || !active || s.generation == sp->ignored_generation)
+  if (sp->window || !active || s.generation == sp->ignored_generation)
     return 1;
 
   if (s.target != TARGET_VIRTUAL || s.width <= 0 || s.height <= 0 || s.fps <= 0) {
@@ -456,10 +450,10 @@ int main(int argc, char **argv)
     int phase;
 
     /* While detached, query on every timeout too: the query also (re)subscribes. */
-    if ((changed || !sp.target) && !update_session(&sp))
+    if ((changed || !sp.window) && !update_session(&sp))
       break;
     changed = 0;
-    if (!sp.target) {
+    if (!sp.window) {
       requested = 0;
       wait_events(monotonic_ns() + SEC, &changed, &requested);
       continue;
@@ -497,13 +491,13 @@ int main(int argc, char **argv)
     }
     sp.repaint = 0;
     requested = 0;
-    if (sp.target)
+    if (sp.window)
       wait_events(deadline, &changed, &requested);
   }
   print_maps();
 
   sp.set_callback(NULL, NULL);
-  if (sp.target)
+  if (sp.window)
     detach(&sp, "exit");
   if (bound && unbind_wl)
     unbind_wl(sp.dpy, wl);

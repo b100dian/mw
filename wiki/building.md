@@ -31,7 +31,8 @@ Before committing, check that `git -C droidmedia diff master -- meson.build` sho
 
 # In HADK
 
-From the Android `croot`, the targets `droidmedia/detect_build_targets.sh` gives the RPM build:
+From the Android `croot`, the targets `droidmedia/detect_build_targets.sh` gives the RPM build,
+and the test tool, which the RPM doesn't ship (`checklist.md` step 12 copies it to the phone):
 ```
 make libdroidmedia minimediaservice minisfservice libminisf screencap_surface_capture_test
 ```

@@ -326,6 +326,17 @@ Pass, for both:
 
 ## 12. droidmedia test tool
 
+The droidmedia RPM doesn't ship the tool: copy it from the HADK build after each install of step 1.
+
+`[phone]`:
+```sh
+. ~/sc/host; scp -q "$HOST:$MW/../../out/target/product/pdx224/system/bin/screencap_surface_capture_test" /tmp/
+```
+`[root]`:
+```sh
+install -m 755 /tmp/screencap_surface_capture_test /usr/libexec/droid-hybris/system/bin/
+```
+
 `[phone]` Touch the screen during each 5 s run:
 ```sh
 T=/usr/libexec/droid-hybris/system/bin/screencap_surface_capture_test
